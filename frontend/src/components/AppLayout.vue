@@ -110,8 +110,8 @@ onMounted(loadFooter)
           <AnnouncementBanner v-if="showBanner" />
           <slot />
         </main>
-        <!-- 页脚 -->
-        <footer v-if="footerText || footerHitokoto" class="flex-shrink-0 px-4 py-3 border-t border-notion-border dark:border-notion-border-dark">
+        <!-- 页脚（登录页不显示，避免撑高整屏登录页产生滚动条） -->
+        <footer v-if="showSidebar && (footerText || footerHitokoto)" class="flex-shrink-0 px-4 py-3 border-t border-notion-border dark:border-notion-border-dark">
           <p class="text-xs text-notion-muted dark:text-notion-muted-dark text-center">
             <template v-if="footerHitokoto && hitokoto.hitokoto">
               <span v-if="footerText">{{ footerText }} — </span>
