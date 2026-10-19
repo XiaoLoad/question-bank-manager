@@ -336,8 +336,8 @@ module.exports = function (getDb, { sendError, localNow }, auth) {
     }
   });
 
-  // GET /api/site-settings/hitokoto — 代理一言 API（带缓存）
-  router.get('/hitokoto', async (req, res) => {
+  // GET /api/site-settings/hitokoto — 代理一言 API（带缓存，需登录）
+  router.get('/hitokoto', auth.authRequired, async (req, res) => {
     try {
       const db = getDb();
 
