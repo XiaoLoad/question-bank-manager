@@ -78,18 +78,6 @@
   border-color: color-mix(in srgb, var(--theme-accent) 20%, transparent);
 }
 
-/* Toast animation */
-@keyframes toast-in {
-  from { transform: translateX(100%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
-}
-@keyframes toast-out {
-  from { transform: translateX(0); opacity: 1; }
-  to { transform: translateX(100%); opacity: 0; }
-}
-.toast-enter { animation: toast-in 0.3s ease-out; }
-.toast-leave { animation: toast-out 0.3s ease-in; }
-
 /* Search highlight */
 mark.search-highlight {
   background: rgba(255, 213, 0, 0.4);
