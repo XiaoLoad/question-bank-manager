@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, onMounted, onActivated, watch, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, onActivated, watch, computed, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useApi } from '@/composables/useApi'
 import { useAuthStore } from '@/stores/auth'
@@ -268,12 +268,6 @@ async function batchUpdateCategory() {
   }
 }
 
-// FIX #9: use shared formatDate
-function formatDateDisplay(dateStr) {
-  return formatDate(dateStr, 'datetime')
-}
-
-// FIX #9: use shared highlightText
 function savePageState() {
   questionsPageStore.save({ filters: { ...filters } })
 }
@@ -286,10 +280,69 @@ function highlight(text) {
 const hasActiveFilters = computed(() => {
   return filters.type || filters.category || filters.dateFrom || filters.dateTo
 })
+
+// 滚动联动布局：
+// 整页在滚动容器（AppLayout 的 main）内滚动，header 与筛选卡片随页面滚出。
+// 列表卡片采用"固定可视高度"：高度 = 滚动容器可视高度 - 底部留白，
+// 列表数据在卡片内部滚动，分页组件固定在卡片底部。
+// 因此当页面滚动到筛选卡片恰好完全滚出视口时，列表卡片（含分页）恰好完整显示。
+// 实现方式：仅设置 height 一个属性，配合 ResizeObserver 实时测量，
+// 避免滚动监听中反复改样式造成布局抖动。
+const filterCardRef = ref(null)
+const listHeight = ref(0)
+let resizeObserver = null
+
+// 向上查找可滚动祖先（overflow-y: auto/scroll）
+function getScrollParent(el) {
+  let p = el?.parentElement
+  while (p) {
+    const style = window.getComputedStyle(p)
+    if (/(auto|scroll)/.test(style.overflowY)) return p
+    p = p.parentElement
+  }
+  return null
+}
+
+function updateListHeight() {
+  const scroller = filterCardRef.value ? getScrollParent(filterCardRef.value) : null
+  if (!scroller) return
+  // 减去列表卡片自身的下边距与额外预留高度，让可视区域略小于滚动容器，
+  // 滚过搜索卡片后不需要再滚动即完整显示列表与分页
+  const marginBottom = 96
+  listHeight.value = Math.max(0, Math.round(scroller.clientHeight - marginBottom))
+}
+
+function bindFilterCardObserver() {
+  nextTick(() => {
+    if (!filterCardRef.value || !('ResizeObserver' in window)) return
+    resizeObserver?.disconnect()
+    resizeObserver = new ResizeObserver(updateListHeight)
+    resizeObserver.observe(filterCardRef.value)
+    const scroller = getScrollParent(filterCardRef.value)
+    if (scroller) resizeObserver.observe(scroller)
+    updateListHeight()
+  })
+}
+
+onMounted(bindFilterCardObserver)
+onActivated(bindFilterCardObserver)
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+})
+
+// 筛选区展开/折叠（移动端）后，下一帧重新测量卡片与滚动容器
+watch(filtersExpanded, () => {
+  nextTick(() => requestAnimationFrame(updateListHeight))
+})
+
+const listCardStyle = computed(() => (
+  listHeight.value > 0 ? { height: `${listHeight.value}px` } : {}
+))
 </script>
 
 <template>
-  <div class="lg:h-full flex flex-col">
+  <div class="flex flex-col">
     <!-- Header (fixed) -->
     <div class="flex-shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 mb-3 sm:mb-4">
       <div>
@@ -304,8 +357,8 @@ const hasActiveFilters = computed(() => {
       </button>
     </div>
 
-    <!-- Filters (fixed) -->
-    <div class="flex-shrink-0 card mb-3 sm:mb-4 p-3 sm:p-6">
+    <!-- Filters -->
+    <div ref="filterCardRef" class="flex-shrink-0 card mb-3 sm:mb-4 p-3 sm:p-6">
       <!-- 搜索框始终显示 -->
       <div class="flex items-center gap-2">
         <div class="flex-1">
@@ -387,8 +440,9 @@ const hasActiveFilters = computed(() => {
       </button>
     </div>
 
-    <!-- 桌面（≥1024px）：表格占据剩余高度并内部滚动；移动端与平板：随页面自然延伸 -->
-    <div class="lg:flex-1 lg:min-h-0 card p-0 overflow-hidden flex flex-col">
+    <!-- 列表：高度 = 滚动容器可视高度 - 底部留白，数据在卡内滚动，分页固定在卡片底部；
+         滚过搜索卡片时整个卡片（含分页）恰好完整显示 -->
+    <div class="card p-0 overflow-hidden flex flex-col mb-8" :style="listCardStyle">
       <!-- Loading Skeleton -->
       <div v-if="loading" class="p-4 space-y-3">
         <div v-for="i in 6" :key="i" class="flex items-center gap-4 py-3 border-b border-notion-border dark:border-notion-border-dark last:border-0">
@@ -402,7 +456,7 @@ const hasActiveFilters = computed(() => {
       </div>
 
       <!-- Empty -->
-      <div v-else-if="questions.length === 0" class="lg:flex-1 flex flex-col items-center justify-center p-4">
+      <div v-else-if="questions.length === 0" class="flex-1 flex flex-col items-center justify-center p-4 py-24">
         <svg class="w-10 h-10 sm:w-12 sm:h-12 text-notion-muted dark:text-notion-muted-dark mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
         </svg>
@@ -412,8 +466,8 @@ const hasActiveFilters = computed(() => {
 
       <!-- Content -->
       <template v-else>
-        <!-- PC 端：表格布局（≥1024px） -->
-        <div class="hidden lg:block flex-1 overflow-x-auto overflow-y-auto">
+        <!-- PC 端：表格布局（≥1024px），占据卡片剩余高度并在内部滚动 -->
+        <div class="hidden lg:block flex-1 min-h-0 overflow-x-auto overflow-y-auto">
           <table class="w-full text-sm">
             <thead class="sticky top-0 z-10 bg-notion-surface dark:bg-notion-surface-dark">
               <tr class="border-b border-notion-border dark:border-notion-border-dark">
@@ -454,7 +508,7 @@ const hasActiveFilters = computed(() => {
                     >{{ categoryScoreMap[q.category] }}分</span>
                   </div>
                 </td>
-                <td class="px-4 py-3 text-notion-muted dark:text-notion-muted-dark whitespace-nowrap">{{ formatDateDisplay(q.created_at) }}</td>
+                <td class="px-4 py-3 text-notion-muted dark:text-notion-muted-dark whitespace-nowrap">{{ formatDate(q.created_at, 'datetime') }}</td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end gap-1">
                     <button @click="savePageState(); router.push(`/questions/${q.id}`)" class="p-1.5 rounded-btn hover:bg-gray-100 dark:hover:bg-gray-800 text-notion-muted dark:text-notion-muted-dark transition-colors" title="查看详情">
@@ -483,7 +537,7 @@ const hasActiveFilters = computed(() => {
         <!-- 移动端与平板：卡片随页面自然延伸 -->
         <div class="lg:hidden">
           <!-- 移动端全选（桌面端表格自带表头全选） -->
-          <div class="lg:sticky lg:top-0 z-10 flex items-center gap-2 px-3 py-2 bg-notion-surface dark:bg-notion-surface-dark border-b border-notion-border dark:border-notion-border-dark">
+          <div class="flex items-center gap-2 px-3 py-2 bg-notion-surface dark:bg-notion-surface-dark border-b border-notion-border dark:border-notion-border-dark">
             <input
               type="checkbox"
               :checked="allSelected"
@@ -527,7 +581,7 @@ const hasActiveFilters = computed(() => {
                     v-html="highlight(q.content)"
                   ></router-link>
                   <div class="flex items-center justify-between mt-2">
-                    <span class="text-[10px] text-notion-muted dark:text-notion-muted-dark">{{ formatDateDisplay(q.created_at) }}</span>
+                    <span class="text-[10px] text-notion-muted dark:text-notion-muted-dark">{{ formatDate(q.created_at, 'datetime') }}</span>
                     <div class="flex items-center gap-1">
                       <button @click="savePageState(); router.push(`/questions/${q.id}`)" class="p-1.5 rounded-btn hover:bg-gray-100 dark:hover:bg-gray-800 text-notion-muted dark:text-notion-muted-dark transition-colors" title="查看详情">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
