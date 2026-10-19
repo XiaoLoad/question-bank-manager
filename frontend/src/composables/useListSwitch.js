@@ -43,7 +43,12 @@ export function useListSwitch(listRef, containerRef, getPage, options = {}) {
       const container = containerRef.value
       if (!container) return
 
-      let rows = Array.from(container.querySelectorAll(rowSelector))
+      // Element.querySelectorAll 不支持以 '>' 开头的选择器，需加 :scope 限定
+      let rows = Array.from(
+        rowSelector.startsWith('>')
+          ? container.querySelectorAll(`:scope ${rowSelector}`)
+          : container.querySelectorAll(rowSelector)
+      )
       if (!rows.length) return
       if (rows.length > maxRows) rows = rows.slice(0, maxRows)
 

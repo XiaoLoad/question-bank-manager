@@ -12,6 +12,7 @@ import { usePagination } from '@/composables/usePagination'
 import { useSelection } from '@/composables/useSelection'
 import { useDebounceSearch } from '@/composables/useDebounceSearch'
 import { useListSwitch } from '@/composables/useListSwitch'
+import gsap from 'gsap'
 import QuestionFormModal from '@/components/QuestionFormModal.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
 import SearchInput from '@/components/SearchInput.vue'
@@ -334,7 +335,45 @@ onBeforeUnmount(() => {
 })
 
 // 筛选区展开/折叠（移动端）后，下一帧重新测量卡片与滚动容器
-watch(filtersExpanded, () => {
+// 移动/平板端筛选区用 GSAP 高度动画平滑展开收起（lg 常显不受影响）
+const filterPanelRef = ref(null)
+const panelAnimating = ref(false)
+let filterExpandTween = null
+
+// 收起动画期间保持元素显示（panelAnimating），动画结束后才隐藏
+const filterPanelClass = computed(() => (
+  filtersExpanded.value || panelAnimating.value ? 'block' : 'hidden lg:block'
+))
+
+function animateFilterPanel(expand) {
+  const el = filterPanelRef.value
+  if (!el) return
+  // lg 及以上面板常显，不做动画
+  if (window.matchMedia('(min-width: 1024px)').matches) return
+  filterExpandTween?.kill()
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+  panelAnimating.value = !expand
+  if (expand) {
+    filterExpandTween = gsap.fromTo(el,
+      { height: 0, opacity: 0, overflow: 'hidden' },
+      { height: 'auto', opacity: 1, duration: 0.35, ease: 'power3.out', onComplete: () => {
+        panelAnimating.value = false
+        gsap.set(el, { clearProps: 'height,opacity,overflow' })
+      } }
+    )
+  } else {
+    filterExpandTween = gsap.fromTo(el,
+      { height: el.scrollHeight, opacity: 1, overflow: 'hidden' },
+      { height: 0, opacity: 0, duration: 0.3, ease: 'power3.in', onComplete: () => {
+        panelAnimating.value = false
+        gsap.set(el, { clearProps: 'all' })
+      } }
+    )
+  }
+}
+
+watch(filtersExpanded, (nv) => {
+  animateFilterPanel(nv)
   nextTick(() => requestAnimationFrame(updateListHeight))
 })
 
@@ -344,8 +383,9 @@ useListSwitch(questions, listCardRef, () => filters.page, {
   ready: () => !loading.value && questions.value.length > 0,
 })
 
+// 高度仅桌面端（lg）生效：移动端/平板列表随页面自然延伸，固定高度会裁掉内容与分页
 const listCardStyle = computed(() => (
-  listHeight.value > 0 ? { height: `${listHeight.value}px` } : {}
+  listHeight.value > 0 ? { '--list-h': `${listHeight.value}px` } : {}
 ))
 </script>
 
@@ -384,8 +424,8 @@ const listCardStyle = computed(() => (
         </button>
       </div>
 
-      <!-- 其他筛选条件：移动端可折叠，≥1024px 始终显示 -->
-      <div :class="['mt-3', filtersExpanded ? 'block' : 'hidden lg:block']">
+      <!-- 其他筛选条件：移动端可折叠（带高度动画），≥1024px 始终显示 -->
+      <div ref="filterPanelRef" :class="['mt-3', filterPanelClass]">
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <div>
             <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">题型</label>
@@ -450,7 +490,7 @@ const listCardStyle = computed(() => (
 
     <!-- 列表：高度 = 滚动容器可视高度 - 底部留白，数据在卡内滚动，分页固定在卡片底部；
          滚过搜索卡片时整个卡片（含分页）恰好完整显示 -->
-    <div ref="listCardRef" class="card p-0 overflow-hidden flex flex-col mb-8" :style="listCardStyle">
+    <div ref="listCardRef" class="card p-0 overflow-hidden flex flex-col mb-8 lg:h-[var(--list-h,auto)]" :style="listCardStyle">
       <!-- Loading Skeleton：仅首次加载（列表为空）显示；翻页保留旧数据，新数据到达后播放滑入动画，避免闪烁 -->
       <div v-if="loading && questions.length === 0" class="p-4 space-y-3">
         <div v-for="i in 6" :key="i" class="flex items-center gap-4 py-3 border-b border-notion-border dark:border-notion-border-dark last:border-0">

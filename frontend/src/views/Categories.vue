@@ -224,9 +224,9 @@ async function doDelete() {
 
     <!-- Toolbar: search + add (fixed) -->
     <div class="flex-shrink-0 card mb-4">
-      <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+      <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
         <!-- Search -->
-        <div class="relative flex-1">
+        <div class="relative flex-1 min-w-[200px] sm:basis-40 lg:basis-auto">
           <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-notion-muted dark:text-notion-muted-dark pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
           </svg>
@@ -260,24 +260,25 @@ async function doDelete() {
           </svg>
         </button>
         <!-- Add form (PC only) -->
-        <form v-if="authStore.isAdmin" @submit.prevent="addCategory" class="hidden sm:flex gap-2 flex-shrink-0 items-center">
+        <!-- 平板（sm~lg）下新增表单换行独占一行，输入框保持可用宽度；lg 及以上与搜索框同行 -->
+        <form v-if="authStore.isAdmin" @submit.prevent="addCategory" class="hidden sm:flex flex-wrap gap-2 items-center sm:w-full lg:w-auto">
           <input
             v-model="newName"
             type="text"
             placeholder="新分类名称..."
-            class="input-field w-44"
+            class="input-field flex-1 min-w-[140px] lg:w-44 lg:flex-none"
           />
           <input
             v-model="newNotes"
             type="text"
             placeholder="备注（可选）"
-            class="input-field w-36"
+            class="input-field flex-1 min-w-[120px] lg:w-36 lg:flex-none"
           />
           <input
             v-model="newScore"
             type="number"
             min="0"
-            class="input-field w-20"
+            class="input-field w-20 flex-shrink-0"
             placeholder="分数"
           />
           <button type="submit" class="btn-primary flex-shrink-0">
