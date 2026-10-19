@@ -47,7 +47,7 @@ async function loadFooter() {
     footerText.value = data.footer_text || ''
     siteName.value = data.site_name || '题库管理'
     footerHitokoto.value = data.footer_hitokoto || false
-    if (footerHitokoto.value) {
+    if (footerHitokoto.value && showSidebar.value) {
       await loadHitokoto()
       // 每 30 秒刷新一次一言
       hitokotoTimer = setInterval(loadHitokoto, 30000)

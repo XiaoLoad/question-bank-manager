@@ -20,9 +20,13 @@ async function request(url, options = {}) {
 
     // 401 时清除 token
     if (res.status === 401) {
+      const hadToken = !!authStore.token
       authStore.logout()
-      // 使用 window.location 跳转，避免循环依赖
-      window.location.href = '/login'
+      // 仅当本次请求原本携带 token（登录态失效）才整页跳登录；
+      // 未登录访问受保护接口（如登录页误调）不跳转，避免与登录页守卫形成重定向环
+      if (hadToken && window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
       throw { status: 401, data: { error: '登录已过期' } }
     }
 
@@ -246,8 +250,11 @@ export function useApi() {
           headers: { 'Authorization': `Bearer ${authStore.token}` },
         })
         if (res.status === 401) {
+          const hadToken = !!authStore.token
           authStore.logout()
-          window.location.href = '/login'
+          if (hadToken && window.location.pathname !== '/login') {
+            window.location.href = '/login'
+          }
           throw { status: 401, data: { error: '登录已过期' } }
         }
         const data = await res.json()
