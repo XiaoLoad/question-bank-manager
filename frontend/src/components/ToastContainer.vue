@@ -11,7 +11,9 @@ const iconMap = {
   info: 'M12 7.8h.01M12 11.2v5M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
 }
 
-// 层叠深度：越靠后的旧通知缩得越小、越透明
+// 层叠深度：越靠后的旧通知缩得越小、越透明。
+// 注意：opacity/transform 必须作用在 .toast-card 上而非其父元素——
+// 祖先的 opacity<1 或 filter 会创建 backdrop root，令卡片的 backdrop-filter 失效。
 function depthStyle(idx) {
   return {
     '--d-scale': Math.pow(0.96, idx).toFixed(3),
@@ -78,10 +80,11 @@ function leave() {
 
 .toast-item {
   pointer-events: auto;
-  will-change: transform;
 }
 
-/* 毛玻璃卡片：图标与文字中轴对齐 */
+/* 毛玻璃卡片：图标与文字中轴对齐。
+   transform/opacity 全部定义在卡片自身，避免祖先创建 backdrop root
+   导致 backdrop-filter 在入场动画期间失效 */
 .toast-card {
   position: relative;
   display: flex;
@@ -96,7 +99,7 @@ function leave() {
   backdrop-filter: blur(16px) saturate(1.6);
   border: 1px solid color-mix(in srgb, var(--theme-border) 65%, transparent);
   box-shadow: 0 12px 32px rgba(20, 20, 30, 0.14), 0 2px 8px rgba(20, 20, 30, 0.06);
-  transform: scale(var(--d-scale, 1));
+  transform: translateX(0) scale(var(--d-scale, 1));
   opacity: calc(1 - var(--d-step, 0) * 0.22);
   transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s ease;
 }
@@ -187,27 +190,36 @@ function leave() {
   to { transform: scaleX(0); }
 }
 
-/* 入场：右侧弹簧滑入 + 模糊聚焦（过冲曲线） */
+/* 入场：右侧弹簧滑入 + 模糊聚焦（过冲曲线）。
+   动画作用在 .toast-card 上，父级仅作为 TransitionGroup 的挂载点 */
 .toast-enter-active {
+  transition: none;
+}
+
+.toast-enter-active .toast-card {
   transition: transform 0.6s cubic-bezier(0.26, 1.1, 0.44, 1), opacity 0.4s ease, filter 0.4s ease;
 }
 
 /* 退场：右侧滑出 + 模糊消散，absolute 让下方卡片无缝上移 */
 .toast-leave-active {
-  transition: transform 0.3s cubic-bezier(0.5, 0.05, 0.85, 0.5), opacity 0.3s ease, filter 0.3s ease;
+  transition: none;
   position: absolute;
   left: 0;
   right: 0;
 }
 
-.toast-enter-from {
-  transform: translateX(112%);
+.toast-leave-active .toast-card {
+  transition: transform 0.3s cubic-bezier(0.5, 0.05, 0.85, 0.5), opacity 0.3s ease, filter 0.3s ease;
+}
+
+.toast-enter-from .toast-card {
+  transform: translateX(112%) scale(var(--d-scale, 1));
   opacity: 0;
   filter: blur(6px);
 }
 
-.toast-leave-to {
-  transform: translateX(112%);
+.toast-leave-to .toast-card {
+  transform: translateX(112%) scale(var(--d-scale, 1));
   opacity: 0;
   filter: blur(4px);
 }
@@ -228,37 +240,27 @@ function leave() {
     gap: 8px;
   }
 
-  .toast-enter-from {
-    transform: translateY(-110%);
+  .toast-enter-from .toast-card {
+    transform: translateY(-110%) scale(var(--d-scale, 1));
   }
 
-  .toast-leave-to {
-    transform: translateY(-110%);
+  .toast-leave-to .toast-card {
+    transform: translateY(-110%) scale(var(--d-scale, 1));
   }
 }
 
 /* 无障碍：减少动效 */
 @media (prefers-reduced-motion: reduce) {
-  .toast-enter-active,
-  .toast-leave-active,
+  .toast-enter-active .toast-card,
+  .toast-leave-active .toast-card,
   .toast-move {
     transition: opacity 0.15s ease;
   }
 
-  .toast-enter-from,
-  .toast-leave-to {
-    transform: none;
+  .toast-enter-from .toast-card,
+  .toast-leave-to .toast-card {
+    transform: scale(var(--d-scale, 1));
     filter: none;
-  }
-
-  .toast-card {
-    transform: none;
-    transition: opacity 0.15s ease;
-  }
-
-  .toast-progress {
-    animation: none;
-    opacity: 0.5;
   }
 }
 </style>
