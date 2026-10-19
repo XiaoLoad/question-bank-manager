@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useThemeStore } from '@/stores/theme'
 import { useAiTaskStore } from '@/stores/aiTask'
@@ -13,8 +13,13 @@ const theme = useThemeStore()
 const router = useRouter()
 const aiTask = useAiTaskStore()
 
+// 首屏初始导航（含懒加载 chunk 加载与登录态重定向）完成前，
+// 不渲染 AppLayout 与 router-view，避免已登录刷新 /login 时侧栏/首页面板闪现
+const routerReady = ref(false)
+
 onMounted(() => {
   theme.init()
+  router.isReady().then(() => { routerReady.value = true })
 })
 
 // 点击悬浮球
@@ -27,17 +32,19 @@ const handleBallClick = () => {
 </script>
 
 <template>
-  <AppLayout>
-    <router-view v-slot="{ Component }">
-      <Transition name="page" mode="out-in">
-        <KeepAlive :include="['Questions', 'Categories', 'Quiz']">
-          <component :is="Component" />
-        </KeepAlive>
-      </Transition>
-    </router-view>
-  </AppLayout>
-  <ToastContainer />
-  <GlobalLoader />
-  <ConfirmDialog />
-  <AiProgressBall @click="handleBallClick" />
+  <div v-if="routerReady">
+    <AppLayout>
+      <router-view v-slot="{ Component }">
+        <Transition name="page" mode="out-in">
+          <KeepAlive :include="['Questions', 'Categories', 'Quiz']">
+            <component :is="Component" />
+          </KeepAlive>
+        </Transition>
+      </router-view>
+    </AppLayout>
+    <ToastContainer />
+    <GlobalLoader />
+    <ConfirmDialog />
+    <AiProgressBall @click="handleBallClick" />
+  </div>
 </template>
