@@ -15,7 +15,6 @@ export const useAiTaskStore = defineStore('aiTask', () => {
 
   const isGenerating = computed(() => task.value?.status === 'generating')
   const isCompleted = computed(() => task.value?.status === 'completed')
-  const isError = computed(() => task.value?.status === 'error')
   const hasTask = computed(() => task.value !== null)
 
   // 开始新任务
@@ -39,13 +38,6 @@ export const useAiTaskStore = defineStore('aiTask', () => {
     }
 
     return abortController
-  }
-
-  // 更新进度
-  function updateProgress(progress) {
-    if (task.value) {
-      task.value.progress = progress
-    }
   }
 
   // 更新提示词
@@ -94,11 +86,6 @@ export const useAiTaskStore = defineStore('aiTask', () => {
     abortController = null
   }
 
-  // 获取 AbortSignal
-  function getSignal() {
-    return abortController?.signal
-  }
-
   // 设置弹窗状态
   function setModalOpen(open) {
     modalOpen.value = open
@@ -109,17 +96,14 @@ export const useAiTaskStore = defineStore('aiTask', () => {
     modalOpen,
     isGenerating,
     isCompleted,
-    isError,
     hasTask,
     startTask,
-    updateProgress,
     setPromptText,
     appendText,
     completeTask,
     setError,
     cancelTask,
     clearTask,
-    getSignal,
     setModalOpen,
   }
 })

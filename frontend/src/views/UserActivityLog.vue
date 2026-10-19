@@ -120,7 +120,7 @@
                   {{ log.action === 'login' ? '登录系统' : log.action === 'quiz_start' ? '开始刷题' : log.action === 'review_start' ? '开始复习' : log.action === 'ai_analyze' ? 'AI 校验答案' : '完成刷题' }}
                 </span>
                 <span class="text-[10px] text-notion-muted dark:text-notion-muted-dark">
-                  {{ formatDate(log.created_at) }}
+                  {{ formatDate(log.created_at, 'datetime') }}
                 </span>
               </div>
               <div v-if="log.detail" class="text-xs text-notion-muted dark:text-notion-muted-dark">
@@ -173,6 +173,7 @@ import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToastStore } from '../stores/toast'
 import { useConfirmStore } from '../stores/confirm'
+import { formatDate } from '../composables/utils'
 
 defineOptions({ name: 'UserActivityLog' })
 
@@ -190,17 +191,6 @@ const filterAction = ref('')
 const currentPage = ref(1)
 const total = ref(0)
 const totalPages = ref(0)
-
-function formatDate(dateStr) {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
 
 async function loadStats() {
   try {

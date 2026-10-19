@@ -620,49 +620,6 @@ app.get("/api/proxy-image", async (req, res) => {
   }
 });
 
-// GET /api/refresh — merge stats + categories in one call
-app.get("/api/refresh", auth.authRequired, (req, res) => {
-  try {
-    const curDb = getDb();
-    const days = Math.max(7, Math.min(365, parseInt(req.query.days) || 30));
-    const total = curDb
-      .prepare(
-        "SELECT COUNT(*) as cnt FROM data_questions WHERE deleted_at IS NULL",
-      )
-      .get().cnt;
-    const byType = curDb
-      .prepare(
-        "SELECT type, COUNT(*) as cnt FROM data_questions WHERE deleted_at IS NULL GROUP BY type",
-      )
-      .all();
-    const byCategory = curDb
-      .prepare(
-        "SELECT COALESCE(category, '默认') as category, COUNT(*) as cnt FROM data_questions WHERE deleted_at IS NULL GROUP BY category",
-      )
-      .all();
-    const dailyTrend = curDb
-      .prepare(
-        `
-      SELECT date(created_at) as date, COUNT(*) as cnt
-      FROM data_questions WHERE deleted_at IS NULL
-      GROUP BY date(created_at)
-      ORDER BY date DESC LIMIT ?
-    `,
-      )
-      .all(days)
-      .reverse();
-    const categories = curDb
-      .prepare(
-        "SELECT id, name, score, created_at FROM data_categories ORDER BY id ASC",
-      )
-      .all();
-    res.json({ total, byType, byCategory, dailyTrend, categories });
-  } catch (err) {
-    console.error("[Error] GET /api/refresh:", err.message);
-    res.status(500).json({ error: "服务器内部错误" });
-  }
-});
-
 // ========== Vue Router fallback ==========
 app.get("*", (req, res, next) => {
   if (req.path.startsWith("/api/")) return next();

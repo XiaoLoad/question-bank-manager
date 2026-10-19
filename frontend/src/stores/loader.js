@@ -15,7 +15,6 @@ import { ref, computed } from 'vue'
  * loader.show('正在保存...')          // 显示并带文案
  * loader.hide()                      // 隐藏
  * await loader.track(api.getStats()) // 包裹 Promise，自动 show/hide
- * await loader.run(async () => { ... }, '导入中')
  *
  * @example 组件外 / 全局（无需 import，main.js 已挂载）
  * window.$loader.show()
@@ -120,15 +119,5 @@ export const useLoaderStore = defineStore('loader', () => {
     }
   }
 
-  /** 包裹异步函数，自动 show / hide */
-  async function run(fn, text = '') {
-    show(text)
-    try {
-      return await (typeof fn === 'function' ? fn() : fn)
-    } finally {
-      hide()
-    }
-  }
-
-  return { pending, progress, label, active, visible, show, hide, track, run }
+  return { pending, progress, label, active, visible, show, hide, track }
 })

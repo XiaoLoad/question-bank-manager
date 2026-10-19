@@ -1,6 +1,25 @@
 import { useToastStore } from '@/stores/toast'
 import { useAuthStore } from '@/stores/auth'
 
+function buildQuery(params = {}) {
+  const qs = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+  })
+  return qs
+}
+
+/** 401 时清除登录态；仅当本次请求原本携带 token（登录态失效）才整页跳登录，
+ *  未登录访问受保护接口（如登录页误调）不跳转，避免与登录页守卫形成重定向环 */
+function handle401(authStore) {
+  const hadToken = !!authStore.token
+  authStore.logout()
+  if (hadToken && window.location.pathname !== '/login') {
+    window.location.href = '/login'
+  }
+  return { status: 401, data: { error: '登录已过期' } }
+}
+
 async function request(url, options = {}) {
   const toast = useToastStore()
   const authStore = useAuthStore()
@@ -18,16 +37,8 @@ async function request(url, options = {}) {
       ...options,
     })
 
-    // 401 时清除 token
     if (res.status === 401) {
-      const hadToken = !!authStore.token
-      authStore.logout()
-      // 仅当本次请求原本携带 token（登录态失效）才整页跳登录；
-      // 未登录访问受保护接口（如登录页误调）不跳转，避免与登录页守卫形成重定向环
-      if (hadToken && window.location.pathname !== '/login') {
-        window.location.href = '/login'
-      }
-      throw { status: 401, data: { error: '登录已过期' } }
+      throw handle401(authStore)
     }
 
     const data = await res.json()
@@ -49,24 +60,9 @@ export function useApi() {
   return {
     // Auth
     login: (username, password) => request('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
-    getMe: () => request('/api/auth/me'),
-    changePassword: (oldPassword, newPassword) => request('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) }),
-
-    // Users (Admin)
-    getUsers: () => request('/api/users'),
-    createUser: (body) => request('/api/users', { method: 'POST', body: JSON.stringify(body) }),
-    updateUser: (id, body) => request(`/api/users/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-    deleteUser: (id) => request(`/api/users/${id}`, { method: 'DELETE' }),
-    resetUserPassword: (id, newPassword) => request(`/api/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword }) }),
 
     // Questions
-    getQuestions: (params = {}) => {
-      const qs = new URLSearchParams()
-      Object.entries(params).forEach(([k, v]) => {
-        if (v !== undefined && v !== null && v !== '') qs.set(k, v)
-      })
-      return request(`/api/questions?${qs}`)
-    },
+    getQuestions: (params = {}) => request(`/api/questions?${buildQuery(params)}`),
     getQuestion: (id) => request(`/api/questions/${id}`),
     createQuestion: (body) => request('/api/questions', { method: 'POST', body: JSON.stringify(body) }),
     updateQuestion: (id, body) => request(`/api/questions/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
@@ -75,10 +71,9 @@ export function useApi() {
     batchDelete: (body) => request('/api/questions/batch-delete', { method: 'POST', body: JSON.stringify(body) }),
     batchCategory: (body) => request('/api/questions/batch-category', { method: 'PUT', body: JSON.stringify(body) }),
 
-    // Stats & Refresh
+    // Stats
     getStats: (days) => request(`/api/stats${days ? `?days=${days}` : ''}`),
     getAdminStats: (days) => request(`/api/stats/admin${days ? `?days=${days}` : ''}`),
-    refresh: () => request('/api/refresh'),
 
     // Site Settings
     getSiteSettings: () => request('/api/site-settings'),
@@ -88,13 +83,7 @@ export function useApi() {
 
     // Quiz
     getTypeCounts: (category) => request(`/api/quiz/type-counts${category ? `?category=${encodeURIComponent(category)}` : ''}`),
-    getQuizQuestions: (params = {}) => {
-      const qs = new URLSearchParams()
-      Object.entries(params).forEach(([k, v]) => {
-        if (v !== undefined && v !== null && v !== '') qs.set(k, v)
-      })
-      return request(`/api/quiz/questions?${qs}`)
-    },
+    getQuizQuestions: (params = {}) => request(`/api/quiz/questions?${buildQuery(params)}`),
     checkQuizAnswer: (id, answer) => request('/api/quiz/check', { method: 'POST', body: JSON.stringify({ id, answer }) }),
     reportQuizResult: (result) => request('/api/quiz/result', { method: 'POST', body: JSON.stringify(result) }),
 
@@ -166,13 +155,7 @@ export function useApi() {
     resolveImportConflicts: (updates) => request('/api/backup/import/resolve', { method: 'POST', body: JSON.stringify({ updates }) }),
 
     // Trash
-    getTrash: (params = {}) => {
-      const qs = new URLSearchParams()
-      Object.entries(params).forEach(([k, v]) => {
-        if (v !== undefined && v !== null && v !== '') qs.set(k, v)
-      })
-      return request(`/api/trash?${qs}`)
-    },
+    getTrash: (params = {}) => request(`/api/trash?${buildQuery(params)}`),
     getTrashCount: () => request('/api/trash/count'),
     restoreTrash: (id, force = false) => request(`/api/trash/${id}/restore`, { method: 'POST', body: JSON.stringify({ force }) }),
     batchRestoreTrash: (body) => request('/api/trash/batch-restore', { method: 'POST', body: JSON.stringify(body) }),
@@ -204,7 +187,6 @@ export function useApi() {
 
     // User AI Prompts
     getUserAiPrompts: () => request('/api/user-ai/prompts'),
-    getUserAiPrompt: (key) => request(`/api/user-ai/prompts/${key}`),
     updateUserAiPrompt: (key, body) => request(`/api/user-ai/prompts/${key}`, { method: 'PUT', body: JSON.stringify(body) }),
     resetUserAiPrompt: (key) => request(`/api/user-ai/prompts/${key}/reset`, { method: 'POST' }),
 
@@ -222,19 +204,12 @@ export function useApi() {
     updateExternalConfig: (body) => request('/api/external/config', { method: 'PUT', body: JSON.stringify(body) }),
     regenerateExternalApiKey: () => request('/api/external/api-key/regenerate', { method: 'POST' }),
     getExternalStats: () => request('/api/external/stats'),
-    getExternalLogs: (params = {}) => {
-      const qs = new URLSearchParams()
-      Object.entries(params).forEach(([k, v]) => {
-        if (v !== undefined && v !== null && v !== '') qs.set(k, v)
-      })
-      return request(`/api/external/logs?${qs}`)
-    },
+    getExternalLogs: (params = {}) => request(`/api/external/logs?${buildQuery(params)}`),
     clearExternalLogs: (days) => request('/api/external/logs', { method: 'DELETE', body: JSON.stringify({ days }) }),
 
     // Database
     getDatabase: () => request('/api/database'),
     switchDatabase: (dbPath) => request('/api/database/switch', { method: 'POST', body: JSON.stringify({ dbPath }) }),
-    createDatabase: (dbPath) => request('/api/database/create', { method: 'POST', body: JSON.stringify({ dbPath }) }),
     resetDatabase: () => request('/api/database/reset', { method: 'POST' }),
     removeRecentDb: (dbPath) => request('/api/database/recent', { method: 'DELETE', body: JSON.stringify({ dbPath, deleteFile: true }) }),
     uploadDatabase: async (file, desiredName) => {
@@ -250,12 +225,7 @@ export function useApi() {
           headers: { 'Authorization': `Bearer ${authStore.token}` },
         })
         if (res.status === 401) {
-          const hadToken = !!authStore.token
-          authStore.logout()
-          if (hadToken && window.location.pathname !== '/login') {
-            window.location.href = '/login'
-          }
-          throw { status: 401, data: { error: '登录已过期' } }
+          throw handle401(authStore)
         }
         const data = await res.json()
         if (!res.ok) {

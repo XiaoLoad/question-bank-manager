@@ -98,36 +98,6 @@ module.exports = function (getDb, setDb, helpers, ctx) {
     }
   });
 
-  // POST /api/database/create — create a new empty db and switch to it
-  router.post('/create', (req, res) => {
-    try {
-      const { dbPath: newPath } = req.body;
-      if (!newPath || typeof newPath !== 'string') {
-        return res.status(400).json({ error: '请提供数据库文件路径' });
-      }
-      const absPath = path.isAbsolute(newPath) ? newPath : path.join(__dirname, '..', newPath);
-      if (fs.existsSync(absPath)) {
-        return res.status(400).json({ error: '该文件已存在，请使用「切换数据库」功能' });
-      }
-      const dir = path.dirname(absPath);
-      if (!fs.existsSync(dir)) {
-        try { fs.mkdirSync(dir, { recursive: true }); } catch (mkdirErr) {
-          return res.status(400).json({ error: `无法创建目录: ${mkdirErr.message}` });
-        }
-      }
-      let newDb;
-      try { newDb = openDatabase(absPath); } catch (createErr) {
-        return res.status(500).json({ error: `创建数据库失败: ${createErr.message}` });
-      }
-      closeCurrentDb();
-      switchTo(newDb, absPath);
-      console.log(`[server] 新建数据库并切换至: ${absPath}`);
-      res.json(buildDbResponse('数据库创建成功', absPath));
-    } catch (err) {
-      sendError(res, err, 'POST /api/database/create');
-    }
-  });
-
   // POST /api/database/upload — upload a .db file and switch to it
   router.post('/upload', upload.single('file'), (req, res) => {
     try {

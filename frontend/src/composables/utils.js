@@ -29,33 +29,6 @@ export function daysSince(dateStr) {
 }
 
 /**
- * Strip option letter prefixes from answer strings.
- * Examples: "C.教育职能" → "教育职能", "A. 北京" → "北京", "B、上海" → "上海"
- * If the result matches a full option text, returns that option text as-is.
- * @param {string|string[]} answers
- * @param {string[]} [options] - full option list for matching
- * @returns {string[]}
- */
-export function stripAnswerPrefix(answers, options) {
-  if (!answers) return []
-  const arr = Array.isArray(answers) ? answers : [answers]
-  return arr.map(a => {
-    let trimmed = String(a).trim()
-    // Strip leading letter prefix: "C." "C、" "C:" "C " etc.
-    trimmed = trimmed.replace(/^[A-Za-z][.\s、·:：]+/, '').trim()
-    // If options provided, try to match against full option text
-    if (options && options.length > 0) {
-      // Exact match with stripped text
-      const exactMatch = options.find(o => o.replace(/^[A-Z][.\s、·:：]+/, '').trim() === trimmed)
-      if (exactMatch) return exactMatch
-      // Exact match with full option
-      if (options.includes(trimmed)) return trimmed
-    }
-    return trimmed
-  })
-}
-
-/**
  * Normalize answer for comparison — converts letter indices (A/B/C/D) to full option text,
  * strips letter prefixes like "A. xxx" → "xxx", and normalizes semantic equivalents.
  * @param {Array} answers
@@ -84,6 +57,23 @@ export function normalizeAnswer(answers, options) {
     }
     return trimmed
   })
+}
+
+/**
+ * Compare two answers after normalization; null if either side is empty.
+ * @param {string[]|string} answersA
+ * @param {string[]|string} answersB
+ * @param {string[]} [options] - option list for letter→text mapping
+ * @returns {boolean|null}
+ */
+export function answersMatch(answersA, answersB, options) {
+  if (!answersA || !answersB) return null
+  const arrA = Array.isArray(answersA) ? answersA : [answersA]
+  const arrB = Array.isArray(answersB) ? answersB : [answersB]
+  if (arrA.length === 0 || arrB.length === 0) return null
+  const a = [...normalizeAnswer(arrA, options)].sort()
+  const b = [...normalizeAnswer(arrB, options)].sort()
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 /**

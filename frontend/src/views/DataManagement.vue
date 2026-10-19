@@ -4,6 +4,7 @@ import { useApi } from '@/composables/useApi'
 import { useToastStore } from '@/stores/toast'
 import { useConfirmStore } from '@/stores/confirm'
 import { QUESTION_TYPES } from '@/composables/constants'
+import { formatDate } from '@/composables/utils'
 import { useTrashStore } from '@/stores/trash'
 import ImportResultDialog from '@/components/ImportResultDialog.vue'
 import ImportCategoryDialog from '@/components/ImportCategoryDialog.vue'
@@ -413,8 +414,6 @@ async function resolveDuplicates() {
   try { const r = await api.resolveDuplicates({ groups }); toast.success(r.message || '去重完成'); trashStore.increment(r.trashed || 0); await scanDuplicates() }
   catch (e) {} finally { dedupLoading.value = false }
 }
-function formatDateShort(d) { return d ? d.slice(0,16).replace('T',' ') : '-' }
-
 async function batchDeleteByDate() {
   if (!batchFilters.before && !batchFilters.after && !batchFilters.type && !batchFilters.category) {
     toast.error('请至少选择一个删除条件')
@@ -852,8 +851,8 @@ async function batchDeleteByDate() {
                   <span v-else class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">移除</span>
                 </div>
                 <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-notion-muted dark:text-notion-muted-dark">
-                  <span>创建: {{ formatDateShort(item.created_at) }}</span>
-                  <span>更新: {{ formatDateShort(item.updated_at) }}</span>
+                  <span>创建: {{ formatDate(item.created_at, 'datetime') }}</span>
+                  <span>更新: {{ formatDate(item.updated_at, 'datetime') }}</span>
                   <span v-if="item.answers">答案: {{ Array.isArray(item.answers) ? item.answers.join(', ') : item.answers }}</span>
                 </div>
               </div>

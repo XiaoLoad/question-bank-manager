@@ -14,9 +14,5 @@ export const useQuestionsPageStore = defineStore('questionsPage', () => {
     return s
   }
 
-  function hasSaved() {
-    return saved.value !== null
-  }
-
-  return { saved, save, restore, hasSaved }
+  return { saved, save, restore }
 })

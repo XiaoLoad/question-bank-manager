@@ -72,10 +72,10 @@
                 </div>
               </td>
               <td class="py-3 px-4 text-sm text-notion-muted dark:text-notion-muted-dark">
-                {{ user.last_login_at ? formatDate(user.last_login_at) : '从未登录' }}
+                {{ user.last_login_at ? formatDate(user.last_login_at, 'datetime') : '从未登录' }}
               </td>
               <td class="py-3 px-4 text-sm text-notion-muted dark:text-notion-muted-dark">
-                {{ formatDate(user.created_at) }}
+                {{ formatDate(user.created_at, 'datetime') }}
               </td>
               <td class="py-3 px-4 text-right">
                 <div class="flex items-center justify-end gap-2">
@@ -144,7 +144,7 @@
           </div>
           <div class="flex items-center justify-between">
             <span class="text-[10px] text-notion-muted dark:text-notion-muted-dark">
-              {{ user.last_login_at ? '登录: ' + formatDate(user.last_login_at) : '从未登录' }}
+              {{ user.last_login_at ? '登录: ' + formatDate(user.last_login_at, 'datetime') : '从未登录' }}
             </span>
             <div class="flex items-center gap-1">
               <button v-if="isLocked(user)" @click="unlockUser(user)" class="p-1.5 text-notion-muted dark:text-notion-muted-dark hover:text-green-600 dark:hover:text-green-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="解锁账号">
@@ -427,6 +427,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useToastStore } from '../stores/toast'
 import { useConfirmStore } from '../stores/confirm'
+import { formatDate } from '../composables/utils'
 
 const router = useRouter()
 const toastStore = useToastStore()
@@ -481,17 +482,6 @@ const resetForm = ref({
   confirmPassword: ''
 })
 
-function formatDate(dateStr) {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
 
 function isLocked(user) {
   if (!user.locked_until) return false

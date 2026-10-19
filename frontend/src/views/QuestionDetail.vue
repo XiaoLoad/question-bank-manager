@@ -7,8 +7,8 @@ import { useConfirmStore } from '@/stores/confirm'
 import { useAiTaskStore } from '@/stores/aiTask'
 import { useAuthStore } from '@/stores/auth'
 import { TYPE_COLORS } from '@/composables/constants'
-import { formatDate, formatJson } from '@/composables/utils'
-import { normalizeAnswer } from '@/composables/utils'
+import { formatDate, formatJson, normalizeAnswer } from '@/composables/utils'
+import { answersMatch as answersMatchRaw } from '@/composables/utils'
 import QuestionFormModal from '@/components/QuestionFormModal.vue'
 import AiAnalyzeModal from '@/components/AiAnalyzeModal.vue'
 import ReplaceAnswerDialog from '@/components/ReplaceAnswerDialog.vue'
@@ -33,7 +33,6 @@ const pendingAiAnswers = ref([])
 const statusMenuRef = ref(null)
 
 // AI analyze state
-const analyzing = ref(false)
 const aiResult = ref(null)
 const aiError = ref('')
 
@@ -333,10 +332,6 @@ watch(() => aiTask.task, (task) => {
   }
 }, { deep: true })
 
-function formatDateDisplay(dateStr) {
-  return formatDate(dateStr, 'datetime')
-}
-
 function renderOptions(options) {
   if (!options) return []
   if (Array.isArray(options)) return options
@@ -358,16 +353,8 @@ function renderAnswers(answers) {
   try { return JSON.parse(answers) } catch { return [answers] }
 }
 
-function answersMatch(aiAnswers, currentAnswers) {
-  if (!aiAnswers || !currentAnswers) return null
-  const aiArr = Array.isArray(aiAnswers) ? aiAnswers : [aiAnswers]
-  const curArr = Array.isArray(currentAnswers) ? currentAnswers : [currentAnswers]
-  if (aiArr.length === 0 || curArr.length === 0) return null
-  const options = renderOptions(question.value?.options)
-  const a = [...normalizeAnswer(aiArr, options)].sort()
-  const b = [...normalizeAnswer(curArr, options)].sort()
-  return JSON.stringify(a) === JSON.stringify(b)
-}
+const answersMatch = (aiAnswers, currentAnswers) =>
+  answersMatchRaw(aiAnswers, currentAnswers, renderOptions(question.value?.options))
 
 </script>
 
@@ -662,11 +649,11 @@ function answersMatch(aiAnswers, currentAnswers) {
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
           <div>
             <span class="text-notion-muted dark:text-notion-muted-dark">创建时间：</span>
-            <span class="text-notion-text dark:text-notion-text-dark">{{ formatDateDisplay(question.created_at) }}</span>
+            <span class="text-notion-text dark:text-notion-text-dark">{{ formatDate(question.created_at, 'datetime') }}</span>
           </div>
           <div>
             <span class="text-notion-muted dark:text-notion-muted-dark">更新时间：</span>
-            <span class="text-notion-text dark:text-notion-text-dark">{{ formatDateDisplay(question.updated_at) }}</span>
+            <span class="text-notion-text dark:text-notion-text-dark">{{ formatDate(question.updated_at, 'datetime') }}</span>
           </div>
           <div>
             <span class="text-notion-muted dark:text-notion-muted-dark">MD5：</span>

@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import { useApi } from '@/composables/useApi'
 import { useToastStore } from '@/stores/toast'
-import { normalizeAnswer } from '@/composables/utils'
+import { answersMatch } from '@/composables/utils'
 
 const props = defineProps({
   duplicates: { type: Array, default: () => [] },
@@ -32,9 +32,8 @@ const selectedConflictCount = computed(() => Object.values(conflictSelections.va
 function getAiMatchType(c, ai) {
   if (!ai?.length) return null
   const opts = c.options || []
-  const a = JSON.stringify([...normalizeAnswer(ai, opts)].sort())
-  if (a === JSON.stringify([...normalizeAnswer(c.existingAnswers, opts)].sort())) return 'existing'
-  if (a === JSON.stringify([...normalizeAnswer(c.importedAnswers, opts)].sort())) return 'imported'
+  if (answersMatch(ai, c.existingAnswers, opts)) return 'existing'
+  if (answersMatch(ai, c.importedAnswers, opts)) return 'imported'
   return 'different'
 }
 async function analyzeSingleConflict(i) {

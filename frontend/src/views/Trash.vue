@@ -210,10 +210,6 @@ function highlight(text) {
   return highlightText(text, filters.search)
 }
 
-function formatDateDisplay(dateStr) {
-  return formatDate(dateStr, 'datetime')
-}
-
 // 检查是否有活跃的筛选条件
 const hasActiveFilters = computed(() => {
   return filters.type || filters.category
@@ -377,7 +373,7 @@ const hasActiveFilters = computed(() => {
                   <span class="badge badge-category">{{ q.category || '默认' }}</span>
                 </td>
                 <td class="px-4 py-3 text-notion-muted dark:text-notion-muted-dark whitespace-nowrap">
-                  <div class="text-xs">{{ formatDateDisplay(q.deleted_at) }}</div>
+                  <div class="text-xs">{{ formatDate(q.deleted_at, 'datetime') }}</div>
                   <div class="text-xs text-notion-muted/60 dark:text-notion-muted-dark/60">{{ daysSince(q.deleted_at) }}</div>
                 </td>
                 <td class="px-4 py-3 text-right">
@@ -437,7 +433,7 @@ const hasActiveFilters = computed(() => {
                   <p class="text-sm text-notion-text dark:text-notion-text-dark line-clamp-2" v-html="highlight(q.content)"></p>
                   <div class="flex items-center justify-between mt-2">
                     <div class="text-[10px] text-notion-muted dark:text-notion-muted-dark">
-                      <span>{{ formatDateDisplay(q.deleted_at) }}</span>
+                      <span>{{ formatDate(q.deleted_at, 'datetime') }}</span>
                       <span class="ml-1 opacity-60">{{ daysSince(q.deleted_at) }}</span>
                     </div>
                     <div class="flex items-center gap-1">

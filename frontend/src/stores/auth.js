@@ -24,12 +24,6 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('user')
   }
 
-  function checkRole(requiredRole) {
-    if (!isLoggedIn.value) return false
-    if (requiredRole === 'admin') return isAdmin.value
-    return true
-  }
-
   return {
     token,
     user,
@@ -37,7 +31,6 @@ export const useAuthStore = defineStore('auth', () => {
     isAdmin,
     displayName,
     setAuth,
-    logout,
-    checkRole
+    logout
   }
 })

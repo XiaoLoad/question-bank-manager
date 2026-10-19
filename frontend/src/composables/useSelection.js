@@ -1,15 +1,13 @@
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 
 /**
  * Composable for selection logic shared across list views.
  * Uses array instead of Set for proper Vue reactivity (Fix #8).
- * @returns {{ selectedIds, allSelected, toggleSelect, toggleSelectAll, clearSelection, setSelection }}
+ * @returns {{ selectedIds, allSelected, toggleSelect, toggleSelectAll, clearSelection }}
  */
 export function useSelection() {
   // FIX #8: Use array instead of Set for proper Vue 3 reactivity
   const selectedIds = ref([])
-
-  const selectedSet = computed(() => new Set(selectedIds.value))
 
   function allSelected(items) {
     return items.length > 0 && selectedIds.value.length === items.length
@@ -36,9 +34,5 @@ export function useSelection() {
     selectedIds.value = []
   }
 
-  function setSelection(ids) {
-    selectedIds.value = [...ids]
-  }
-
-  return { selectedIds, selectedSet, allSelected, toggleSelect, toggleSelectAll, clearSelection, setSelection }
+  return { selectedIds, allSelected, toggleSelect, toggleSelectAll, clearSelection }
 }
