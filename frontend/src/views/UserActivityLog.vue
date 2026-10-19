@@ -76,9 +76,10 @@
     </div>
 
     <!-- Logs List -->
-    <div class="card p-0 overflow-hidden">
+    <div ref="listCardRef" class="card p-0 overflow-hidden">
       <!-- Loading -->
-      <div v-if="loading" class="flex items-center justify-center py-20">
+      <!-- Loading：仅首次加载（列表为空）显示；翻页保留旧数据，新数据到达后播放滑入动画 -->
+      <div v-if="loading && logs.length === 0" class="flex items-center justify-center py-20">
         <div class="w-8 h-8 border-2 border-notion-accent/30 border-t-notion-accent rounded-full animate-spin" />
       </div>
 
@@ -174,6 +175,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useToastStore } from '../stores/toast'
 import { useConfirmStore } from '../stores/confirm'
 import { formatDate } from '../composables/utils'
+import { useListSwitch } from '../composables/useListSwitch'
 
 defineOptions({ name: 'UserActivityLog' })
 
@@ -191,6 +193,11 @@ const filterAction = ref('')
 const currentPage = ref(1)
 const total = ref(0)
 const totalPages = ref(0)
+const listCardRef = ref(null)
+useListSwitch(logs, listCardRef, () => currentPage.value, {
+  rowSelector: '.divide-y > *',
+  ready: () => !loading.value && logs.value.length > 0,
+})
 
 async function loadStats() {
   try {

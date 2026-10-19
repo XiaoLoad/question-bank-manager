@@ -11,6 +11,7 @@ import { formatDate, highlightText } from '@/composables/utils'
 import { usePagination } from '@/composables/usePagination'
 import { useSelection } from '@/composables/useSelection'
 import { useDebounceSearch } from '@/composables/useDebounceSearch'
+import { useListSwitch } from '@/composables/useListSwitch'
 import QuestionFormModal from '@/components/QuestionFormModal.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
 import SearchInput from '@/components/SearchInput.vue'
@@ -289,6 +290,7 @@ const hasActiveFilters = computed(() => {
 // 实现方式：仅设置 height 一个属性，配合 ResizeObserver 实时测量，
 // 避免滚动监听中反复改样式造成布局抖动。
 const filterCardRef = ref(null)
+const listCardRef = ref(null)
 const listHeight = ref(0)
 let resizeObserver = null
 
@@ -334,6 +336,12 @@ onBeforeUnmount(() => {
 // 筛选区展开/折叠（移动端）后，下一帧重新测量卡片与滚动容器
 watch(filtersExpanded, () => {
   nextTick(() => requestAnimationFrame(updateListHeight))
+})
+
+// 分页/筛选切换时，列表行以方向感知的 stagger 动画滑入（替代闪烁式替换）
+useListSwitch(questions, listCardRef, () => filters.page, {
+  rowSelector: 'tbody tr, .divide-y > *',
+  ready: () => !loading.value && questions.value.length > 0,
 })
 
 const listCardStyle = computed(() => (
@@ -442,9 +450,9 @@ const listCardStyle = computed(() => (
 
     <!-- 列表：高度 = 滚动容器可视高度 - 底部留白，数据在卡内滚动，分页固定在卡片底部；
          滚过搜索卡片时整个卡片（含分页）恰好完整显示 -->
-    <div class="card p-0 overflow-hidden flex flex-col mb-8" :style="listCardStyle">
-      <!-- Loading Skeleton -->
-      <div v-if="loading" class="p-4 space-y-3">
+    <div ref="listCardRef" class="card p-0 overflow-hidden flex flex-col mb-8" :style="listCardStyle">
+      <!-- Loading Skeleton：仅首次加载（列表为空）显示；翻页保留旧数据，新数据到达后播放滑入动画，避免闪烁 -->
+      <div v-if="loading && questions.length === 0" class="p-4 space-y-3">
         <div v-for="i in 6" :key="i" class="flex items-center gap-4 py-3 border-b border-notion-border dark:border-notion-border-dark last:border-0">
           <Skeleton width="16px" height="16px" rounded="4px" />
           <Skeleton width="40px" height="14px" />

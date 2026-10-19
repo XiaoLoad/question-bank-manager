@@ -9,6 +9,7 @@ import { formatDate, daysSince, highlightText } from '@/composables/utils'
 import { usePagination } from '@/composables/usePagination'
 import { useSelection } from '@/composables/useSelection'
 import { useDebounceSearch } from '@/composables/useDebounceSearch'
+import { useListSwitch } from '@/composables/useListSwitch'
 import PaginationBar from '@/components/PaginationBar.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import SearchableSelect from '@/components/SearchableSelect.vue'
@@ -41,6 +42,11 @@ const filters = reactive({
 })
 
 const categories = ref([])
+const listCardRef = ref(null)
+useListSwitch(questions, listCardRef, () => filters.page, {
+  rowSelector: 'tbody tr, .divide-y > *',
+  ready: () => !loading.value && questions.value.length > 0,
+})
 onMounted(async () => {
   loadTrash()
   try { categories.value = await api.getCategories() } catch {}
@@ -320,9 +326,10 @@ const hasActiveFilters = computed(() => {
     </div>
 
     <!-- 桌面（≥1024px）：表格占据剩余高度并内部滚动；移动端与平板：随页面自然延伸 -->
-    <div class="lg:flex-1 lg:min-h-0 card p-0 overflow-hidden flex flex-col">
+    <div ref="listCardRef" class="lg:flex-1 lg:min-h-0 card p-0 overflow-hidden flex flex-col">
       <!-- Loading -->
-      <div v-if="loading" class="lg:flex-1 flex items-center justify-center py-12">
+      <!-- Loading：仅首次加载（列表为空）显示；翻页保留旧数据，新数据到达后播放滑入动画 -->
+      <div v-if="loading && questions.length === 0" class="lg:flex-1 flex items-center justify-center py-12">
         <div class="w-8 h-8 border-2 border-notion-accent/30 border-t-notion-accent rounded-full animate-spin" />
       </div>
 

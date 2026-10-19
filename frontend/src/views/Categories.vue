@@ -8,6 +8,7 @@ import { useToastStore } from '@/stores/toast'
 import { usePagination } from '@/composables/usePagination'
 import PaginationBar from '@/components/PaginationBar.vue'
 import SearchableSelect from '@/components/SearchableSelect.vue'
+import { useListSwitch } from '@/composables/useListSwitch'
 
 defineOptions({ name: 'Categories' })
 
@@ -78,6 +79,13 @@ const { paginationRange, goToPage } = usePagination(
 const paginatedCategories = computed(() => {
   const start = (page.value - 1) * pageSize.value
   return filteredCategories.value.slice(start, start + pageSize.value)
+})
+
+// 分页切换时列表行滑入动画（替代闪烁式替换）
+const catListRef = ref(null)
+useListSwitch(paginatedCategories, catListRef, () => page.value, {
+  rowSelector: '> *',
+  ready: () => !loading.value && paginatedCategories.value.length > 0,
 })
 
 // Reset page when search changes
@@ -283,7 +291,7 @@ async function doDelete() {
     </div>
 
     <!-- 桌面（≥1024px）：列表占据剩余高度并内部滚动；移动端与平板：随页面自然延伸 -->
-    <div class="lg:flex-1 lg:min-h-0 card p-0 overflow-hidden flex flex-col">
+    <div ref="listCardRef" class="lg:flex-1 lg:min-h-0 card p-0 overflow-hidden flex flex-col">
       <!-- Loading Skeleton -->
       <div v-if="loading" class="p-4 space-y-3">
         <div v-for="i in 5" :key="i" class="flex items-center gap-4 p-4 border-b border-notion-border dark:border-notion-border-dark last:border-0">
@@ -306,7 +314,7 @@ async function doDelete() {
 
       <!-- Scrollable list -->
       <template v-else>
-        <div class="lg:flex-1 lg:overflow-y-auto">
+        <div ref="catListRef" class="lg:flex-1 lg:overflow-y-auto">
           <div
             v-for="(cat, idx) in paginatedCategories"
             :key="cat.id"

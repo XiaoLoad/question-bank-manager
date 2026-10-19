@@ -15,7 +15,7 @@
     </div>
 
     <!-- Users List -->
-    <div class="card p-0 overflow-hidden">
+    <div ref="listCardRef" class="card p-0 overflow-hidden">
       <!-- Loading State -->
       <div v-if="loading" class="flex items-center justify-center py-20">
         <div class="w-8 h-8 border-2 border-notion-accent/30 border-t-notion-accent rounded-full animate-spin" />
@@ -428,6 +428,7 @@ import { useRouter } from 'vue-router'
 import { useToastStore } from '../stores/toast'
 import { useConfirmStore } from '../stores/confirm'
 import { formatDate } from '../composables/utils'
+import { useListSwitch } from '../composables/useListSwitch'
 
 const router = useRouter()
 const toastStore = useToastStore()
@@ -435,6 +436,11 @@ const confirmStore = useConfirmStore()
 
 const users = ref([])
 const loading = ref(false)
+const listCardRef = ref(null)
+useListSwitch(users, listCardRef, null, {
+  rowSelector: 'tbody tr, .divide-y > *',
+  ready: () => !loading.value && users.value.length > 0,
+})
 const categories = ref([])
 
 // Add user
