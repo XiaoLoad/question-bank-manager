@@ -24,9 +24,14 @@ onMounted(() => {
 
 // 点击悬浮球
 const handleBallClick = () => {
-  // 跳转到题目详情页
-  if (aiTask.task?.questionId) {
-    router.push(`/questions/${aiTask.task.questionId}`)
+  const task = aiTask.task
+  if (!task?.questionId) return
+  // 通知题目详情页重新展开 AI 弹窗（在本页时 router.push 不会重新挂载页面，
+  // 必须经 store 的 reopenRequest 驱动；跨页时由详情页挂载后的 watch 消费）
+  aiTask.requestReopen(task.questionId)
+  const target = `/questions/${task.questionId}`
+  if (String(router.currentRoute.value.params.id || '') !== String(task.questionId)) {
+    router.push(target).catch(() => {})
   }
 }
 </script>

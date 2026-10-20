@@ -10,6 +10,10 @@ export const useAiTaskStore = defineStore('aiTask', () => {
   // 弹窗是否打开（用于控制悬浮球显示）
   const modalOpen = ref(false)
 
+  // 悬浮球点击后的"重新展开弹窗"请求：{ questionId, seq }
+  // seq 递增保证每次点击都是新对象，详情页的 watch 一定会被触发
+  const reopenRequest = ref(null)
+
   // AbortController for cancelling
   let abortController = null
 
@@ -91,9 +95,21 @@ export const useAiTaskStore = defineStore('aiTask', () => {
     modalOpen.value = open
   }
 
+  // 发起"重新展开弹窗"请求（悬浮球点击时调用）
+  let reopenSeq = 0
+  function requestReopen(questionId) {
+    reopenRequest.value = { questionId, seq: ++reopenSeq }
+  }
+
+  // 消费掉请求，避免重复触发
+  function consumeReopen() {
+    reopenRequest.value = null
+  }
+
   return {
     task,
     modalOpen,
+    reopenRequest,
     isGenerating,
     isCompleted,
     hasTask,
@@ -105,5 +121,7 @@ export const useAiTaskStore = defineStore('aiTask', () => {
     cancelTask,
     clearTask,
     setModalOpen,
+    requestReopen,
+    consumeReopen,
   }
 })

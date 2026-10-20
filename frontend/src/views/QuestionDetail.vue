@@ -63,13 +63,11 @@ const currentAiStatus = computed(() => {
   return question.value?.ai_answer_status || null
 })
 
-onMounted(async () => {
-  // 添加点击外部关闭菜单的监听器
-  document.addEventListener('click', handleClickOutside)
-
+async function loadQuestion(id) {
+  loading.value = true
   try {
     const [q, cats] = await Promise.all([
-      api.getQuestion(route.params.id),
+      api.getQuestion(id),
       api.getCategories(),
     ])
     question.value = q
@@ -99,6 +97,23 @@ onMounted(async () => {
     // handled
   } finally {
     loading.value = false
+  }
+}
+
+onMounted(() => {
+  // 添加点击外部关闭菜单的监听器
+  document.addEventListener('click', handleClickOutside)
+
+  loadQuestion(route.params.id)
+})
+
+// 同路由不同参数切换（如从悬浮球跳到另一题）时组件会被复用，
+// 必须重新加载题目，否则 question 停留在旧题、弹窗无法重开
+watch(() => route.params.id, (id, oldId) => {
+  if (id && String(id) !== String(oldId)) {
+    showAiModal.value = false
+    aiTask.setModalOpen(false)
+    loadQuestion(id)
   }
 })
 
@@ -331,6 +346,22 @@ watch(() => aiTask.task, (task) => {
     }
   }
 }, { deep: true })
+
+// 悬浮球点击 → 重新展开 AI 弹窗。
+// 停留在本页时 router.push 是同路由 no-op、组件不会重新挂载，必须由
+// store 的 reopenRequest 驱动；从其他页进入时题目尚未加载，等 question
+// 就绪后同一 watch 再消费。
+function tryConsumeReopen() {
+  const req = aiTask.reopenRequest
+  if (!req) return
+  if (String(req.questionId) !== String(question.value?.id ?? '')) return
+  aiTask.consumeReopen()
+  if (!showAiModal.value) {
+    showAiModal.value = true
+  }
+  aiTask.setModalOpen(true)
+}
+watch(() => [aiTask.reopenRequest, question.value], tryConsumeReopen)
 
 function renderOptions(options) {
   if (!options) return []

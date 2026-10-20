@@ -33,6 +33,9 @@ const isFromCache = ref(false)
 // Typewriter
 let typewriterTimer = null
 let charQueue = []
+// 组件卸载后（关闭弹窗但流式请求仍在后台运行）文本要直接落到 store，
+// 否则重新打开弹窗时只能看到关闭前的半截内容
+let alive = true
 
 // GSAP 入场动画
 const enterAnimation = () => {
@@ -105,6 +108,12 @@ const processQueue = () => {
 }
 
 const addToQueue = (text) => {
+  // 已卸载（关闭弹窗但流式仍在后台跑）：跳过打字机，直接写入 store，
+  // 保证重新打开弹窗时能看到关闭后继续生成的内容
+  if (!alive) {
+    aiTask.appendText(text)
+    return
+  }
   charQueue.push(...text.split(''))
   if (!isTyping.value) {
     processQueue()
@@ -297,8 +306,14 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   // 只清理本地定时器，不取消全局任务
+  alive = false
   clearTimeout(typewriterTimer)
   isTyping.value = false
+  // 已排队未打出的字符并入 store，重开弹窗时不丢字
+  if (charQueue.length) {
+    aiTask.appendText(charQueue.join(''))
+    charQueue = []
+  }
 })
 </script>
 
