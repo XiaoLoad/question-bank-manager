@@ -13,6 +13,7 @@ import { useListSwitch } from '@/composables/useListSwitch'
 import PaginationBar from '@/components/PaginationBar.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import SearchableSelect from '@/components/SearchableSelect.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 defineOptions({ name: 'Trash' })
 
@@ -224,28 +225,30 @@ const hasActiveFilters = computed(() => {
 
 <template>
   <div class="lg:h-full flex flex-col">
-    <!-- Header (fixed) -->
-    <div class="flex-shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 mb-3 sm:mb-4">
-      <div>
-        <h1 class="text-xl sm:text-2xl font-bold text-notion-text dark:text-notion-text-dark">回收站</h1>
-        <p class="text-xs sm:text-sm text-notion-muted dark:text-notion-muted-dark mt-1">共 {{ total }} 道已删除题目</p>
-      </div>
-      <button
-        v-if="total > 0"
-        @click="emptyTrash"
-        :disabled="emptying"
-        class="btn-danger"
-      >
-        <svg v-if="emptying" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-        </svg>
-        <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-        </svg>
-        {{ emptying ? '清空中...' : `清空回收站 (${total})` }}
-      </button>
-    </div>
+    <PageHeader
+      class="flex-shrink-0"
+      eyebrow="删除暂存"
+      eyebrow-en="TRASH"
+      title="回收站"
+      :description="`共 ${total} 道已删除题目`"
+    >
+      <template v-if="total > 0" #actions>
+        <button
+          @click="emptyTrash"
+          :disabled="emptying"
+          class="btn-danger"
+        >
+          <svg v-if="emptying" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+          </svg>
+          {{ emptying ? '清空中...' : `清空回收站 (${total})` }}
+        </button>
+      </template>
+    </PageHeader>
 
     <!-- Filters (fixed) -->
     <div class="flex-shrink-0 card mb-3 sm:mb-4 p-3 sm:p-6">

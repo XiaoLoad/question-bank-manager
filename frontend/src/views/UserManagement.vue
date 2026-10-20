@@ -1,18 +1,20 @@
 <template>
   <div>
-    <!-- Header -->
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 mb-4 sm:mb-6">
-      <div>
-        <h1 class="text-xl sm:text-2xl font-bold text-notion-text dark:text-notion-text-dark">用户管理</h1>
-        <p class="text-xs sm:text-sm text-notion-muted dark:text-notion-muted-dark mt-1">管理系统用户账号</p>
-      </div>
-      <button @click="showAddModal = true" class="btn-primary flex items-center gap-2 text-sm">
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
-        </svg>
-        添加用户
-      </button>
-    </div>
+    <PageHeader
+      eyebrow="访问控制"
+      eyebrow-en="ACCESS"
+      title="用户管理"
+      description="管理账号、角色与访问权限，保持团队入口清晰可控。"
+    >
+      <template #actions>
+        <button @click="showAddModal = true" class="btn-primary flex items-center gap-2 text-sm">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          添加用户
+        </button>
+      </template>
+    </PageHeader>
 
     <!-- Users List -->
     <div ref="listCardRef" class="card p-0 overflow-hidden">
@@ -429,6 +431,7 @@ import { useToastStore } from '../stores/toast'
 import { useConfirmStore } from '../stores/confirm'
 import { formatDate } from '../composables/utils'
 import { useListSwitch } from '../composables/useListSwitch'
+import PageHeader from '../components/PageHeader.vue'
 
 const router = useRouter()
 const toastStore = useToastStore()

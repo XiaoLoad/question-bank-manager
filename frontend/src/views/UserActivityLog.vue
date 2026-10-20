@@ -1,27 +1,21 @@
 <template>
   <div>
-    <!-- Header -->
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 mb-4 sm:mb-6">
-      <div>
-        <div class="flex items-center gap-2 mb-1">
-          <button @click="router.push('/users')" class="text-notion-muted dark:text-notion-muted-dark hover:text-notion-text dark:hover:text-notion-text-dark transition-colors">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <h1 class="text-xl sm:text-2xl font-bold text-notion-text dark:text-notion-text-dark">
-            {{ userInfo.display_name || userInfo.username || '用户' }} 的活动日志
-          </h1>
-        </div>
-        <p class="text-xs sm:text-sm text-notion-muted dark:text-notion-muted-dark ml-7">查看用户的登录和刷题记录</p>
-      </div>
-      <button v-if="logs.length > 0" @click="handleClearLogs" class="btn-danger text-sm flex items-center gap-1.5">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
-        清空日志
-      </button>
-    </div>
+    <PageHeader
+      eyebrow="用户动态"
+      eyebrow-en="ACTIVITY"
+      :title="`${userInfo.display_name || userInfo.username || '用户'} 的活动日志`"
+      description="查看用户的登录与刷题记录，掌握账号的使用轨迹。"
+    >
+      <template #actions>
+        <button @click="router.push('/users')" class="btn-secondary text-sm">返回用户管理</button>
+        <button v-if="logs.length > 0" @click="handleClearLogs" class="btn-danger text-sm flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          清空日志
+        </button>
+      </template>
+    </PageHeader>
 
     <!-- Stats Cards -->
     <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4 mb-4 sm:mb-6">
@@ -176,6 +170,7 @@ import { useToastStore } from '../stores/toast'
 import { useConfirmStore } from '../stores/confirm'
 import { formatDate } from '../composables/utils'
 import { useListSwitch } from '../composables/useListSwitch'
+import PageHeader from '../components/PageHeader.vue'
 
 defineOptions({ name: 'UserActivityLog' })
 

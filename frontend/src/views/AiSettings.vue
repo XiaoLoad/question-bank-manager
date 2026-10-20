@@ -5,6 +5,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import { useConfirmStore } from '@/stores/confirm'
 import Skeleton from '@/components/Skeleton.vue'
+import PageHeader from '@/components/PageHeader.vue'
+import SectionHeader from '@/components/SectionHeader.vue'
 
 defineOptions({ name: 'AiSettings' })
 
@@ -841,18 +843,16 @@ function providerHost(url) {
 
 <template>
   <div>
-    <!-- 页头：与其它页面保持一致，仅标题 + 描述 + 右侧操作 -->
-    <header class="anim-rise flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 flex-wrap mb-6 sm:mb-8">
-      <div class="min-w-0">
-        <h1 class="text-xl sm:text-2xl font-bold text-notion-text dark:text-notion-text-dark">AI 设置</h1>
-        <p class="text-xs sm:text-sm text-notion-muted dark:text-notion-muted-dark mt-1">
-          {{ isAdmin
-            ? '管理全局 AI 服务商与提示词，为题库提供稳定的答案校验能力。'
-            : '配置你的 AI 服务商与提示词，用于题目答案校验。' }}
-        </p>
-      </div>
-
-      <div class="flex items-center gap-2 flex-shrink-0">
+    <!-- 页头 -->
+    <PageHeader
+      eyebrow="智能服务"
+      eyebrow-en="INTELLIGENCE"
+      title="AI 设置"
+      :description="isAdmin
+        ? '管理全局 AI 服务商与提示词，为题库提供稳定的答案校验能力。'
+        : '配置你的 AI 服务商与提示词，用于题目答案校验。'"
+    >
+      <template #actions>
         <div ref="presetWrapRef" class="relative">
           <button
             type="button"
@@ -915,8 +915,8 @@ function providerHost(url) {
             </div>
           </Transition>
         </div>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <!-- 概览 -->
     <div
@@ -976,32 +976,35 @@ function providerHost(url) {
       <div class="min-w-0">
         <!-- 服务商 -->
         <section aria-labelledby="providers-heading">
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-3">
-            <div class="min-w-0">
-              <h2 id="providers-heading" class="flex items-center gap-2 text-base font-semibold text-notion-text dark:text-notion-text-dark">
-                AI 服务商
-                <span class="badge bg-notion-muted/10 text-notion-muted dark:text-notion-muted-dark text-[10px] tabular-nums">
-                  {{ providerQuery.trim() ? visibleProviders.length + '/' + providers.length : providers.length }}
-                </span>
-              </h2>
-              <p class="text-xs text-notion-muted dark:text-notion-muted-dark mt-1">AI 校验会优先使用标记为「默认」的已启用服务商</p>
-            </div>
-
-            <div v-if="providers.length > 4" class="relative w-full sm:w-56 flex-shrink-0">
-              <span class="absolute inset-y-0 left-0 flex items-center pl-2.5 text-notion-muted dark:text-notion-muted-dark pointer-events-none">
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                </svg>
+          <SectionHeader
+            index="01"
+            title="AI 服务商"
+            hint="AI 校验会优先使用标记为「默认」的已启用服务商"
+            title-id="providers-heading"
+          >
+            <template #badge>
+              <span class="badge bg-notion-muted/10 text-notion-muted dark:text-notion-muted-dark text-[10px] tabular-nums">
+                {{ providerQuery.trim() ? visibleProviders.length + '/' + providers.length : providers.length }}
               </span>
-              <input
-                v-model="providerQuery"
-                type="search"
-                class="input-field h-8 py-1 pl-8 pr-3 text-xs"
-                placeholder="搜索服务商、模型或地址"
-                aria-label="搜索服务商"
-              />
-            </div>
-          </div>
+            </template>
+
+            <template v-if="providers.length > 4" #actions>
+              <div class="relative w-full sm:w-56 flex-shrink-0">
+                <span class="absolute inset-y-0 left-0 flex items-center pl-2.5 text-notion-muted dark:text-notion-muted-dark pointer-events-none">
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                  </svg>
+                </span>
+                <input
+                  v-model="providerQuery"
+                  type="search"
+                  class="input-field h-8 py-1 pl-8 pr-3 text-xs"
+                  placeholder="搜索服务商、模型或地址"
+                  aria-label="搜索服务商"
+                />
+              </div>
+            </template>
+          </SectionHeader>
 
           <!-- 加载骨架 -->
           <div v-if="loading" class="provider-list">
@@ -1226,16 +1229,17 @@ function providerHost(url) {
 
         <!-- 提示词 -->
         <section aria-labelledby="prompts-heading" class="mt-7">
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between mb-3">
-            <div class="min-w-0">
-              <h2 id="prompts-heading" class="text-base font-semibold text-notion-text dark:text-notion-text-dark">提示词</h2>
-              <p class="text-xs text-notion-muted dark:text-notion-muted-dark mt-1">定义 AI 的角色与输出格式，支持占位变量</p>
-            </div>
-
-            <div v-if="isAdmin" class="segmented self-start sm:self-auto" role="tablist" aria-label="提示词范围">
-              <!-- 滑块位置与当前激活项保持一致：default 在左，user 在右 -->
-              <span class="segmented-thumb" :class="{ 'is-right': promptScope === 'user' }" aria-hidden="true"></span>
-              <button
+          <SectionHeader
+            index="02"
+            title="提示词"
+            hint="定义 AI 的角色与输出格式，支持占位变量"
+            title-id="prompts-heading"
+          >
+            <template v-if="isAdmin" #actions>
+              <div class="segmented self-start sm:self-auto" role="tablist" aria-label="提示词范围">
+                <!-- 滑块位置与当前激活项保持一致：default 在左，user 在右 -->
+                <span class="segmented-thumb" :class="{ 'is-right': promptScope === 'user' }" aria-hidden="true"></span>
+                <button
                 type="button"
                 role="tab"
                 class="segmented-btn"
@@ -1251,8 +1255,9 @@ function providerHost(url) {
                 :aria-selected="promptScope === 'user'"
                 @click="promptScope = 'user'"
               >我的提示词</button>
-            </div>
-          </div>
+              </div>
+            </template>
+          </SectionHeader>
 
           <Transition name="fade-slide" mode="out-in">
             <div :key="promptScope" class="space-y-3">

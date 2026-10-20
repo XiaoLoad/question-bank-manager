@@ -7,6 +7,7 @@ import { useToastStore } from "@/stores/toast";
 import { QUESTION_TYPES } from "@/composables/constants";
 import { normalizeAnswer } from "@/composables/utils";
 import SearchableSelect from "@/components/SearchableSelect.vue";
+import PageHeader from "@/components/PageHeader.vue";
 
 defineOptions({ name: "Quiz" });
 
@@ -573,19 +574,13 @@ function getBoolClass(val) {
 
 <template>
   <div class="lg:h-full flex flex-col">
-    <!-- Header -->
-    <div class="flex-shrink-0 mb-4 sm:mb-6">
-      <h1
-        class="text-xl sm:text-2xl font-bold text-notion-text dark:text-notion-text-dark"
-      >
-        题库练习
-      </h1>
-      <p
-        class="text-xs sm:text-sm text-notion-muted dark:text-notion-muted-dark mt-1"
-      >
-        选择分类，开始练习
-      </p>
-    </div>
+    <PageHeader
+      class="flex-shrink-0"
+      eyebrow="练习模式"
+      eyebrow-en="PRACTICE"
+      title="题库练习"
+      description="选择分类，开始练习。"
+    />
 
     <!-- Setup -->
     <div v-if="state === 'setup'" class="card mb-10">

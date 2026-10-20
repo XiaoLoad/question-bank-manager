@@ -3,6 +3,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useApi } from '@/composables/useApi'
 import { useToastStore } from '@/stores/toast'
 import { useConfirmStore } from '@/stores/confirm'
+import PageHeader from '@/components/PageHeader.vue'
 
 defineOptions({ name: 'ExternalBanks' })
 
@@ -243,13 +244,12 @@ onMounted(async () => {
 
 <template>
   <div>
-    <!-- Header -->
-    <div class="mb-8">
-      <h1 class="text-2xl font-bold text-notion-text dark:text-notion-text-dark">题库对接</h1>
-      <p class="text-sm text-notion-muted dark:text-notion-muted-dark mt-1">
-        将本系统作为外部题库，供 Yatori、OCS 网课助手等工具调用
-      </p>
-    </div>
+    <PageHeader
+      eyebrow="外部生态"
+      eyebrow-en="INTEGRATIONS"
+      title="题库对接"
+      description="将本系统作为外部题库，供 Yatori、OCS 网课助手等工具调用。"
+    />
 
     <!-- Security Card -->
     <div class="card mb-6">

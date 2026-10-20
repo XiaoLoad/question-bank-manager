@@ -18,6 +18,7 @@ import PaginationBar from '@/components/PaginationBar.vue'
 import SearchInput from '@/components/SearchInput.vue'
 import Skeleton from '@/components/Skeleton.vue'
 import SearchableSelect from '@/components/SearchableSelect.vue'
+import PageHeader from '@/components/PageHeader.vue'
 import { useQuestionsPageStore } from '@/stores/questionsPage'
 
 defineOptions({ name: 'Questions' })
@@ -391,19 +392,22 @@ const listCardStyle = computed(() => (
 
 <template>
   <div class="flex flex-col">
-    <!-- Header (fixed) -->
-    <div class="flex-shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 mb-3 sm:mb-4">
-      <div>
-        <h1 class="text-xl sm:text-2xl font-bold text-notion-text dark:text-notion-text-dark">题目管理</h1>
-        <p class="text-xs sm:text-sm text-notion-muted dark:text-notion-muted-dark mt-1">共 {{ total }} 道题目</p>
-      </div>
-      <button v-if="authStore.isAdmin" @click="addQuestion" class="btn-primary text-sm">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-        </svg>
-        添加题目
-      </button>
-    </div>
+    <PageHeader
+      class="flex-shrink-0"
+      eyebrow="题库维护"
+      eyebrow-en="QUESTIONS"
+      title="题目管理"
+      :description="`共 ${total} 道题目`"
+    >
+      <template v-if="authStore.isAdmin" #actions>
+        <button @click="addQuestion" class="btn-primary text-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+          </svg>
+          添加题目
+        </button>
+      </template>
+    </PageHeader>
 
     <!-- Filters -->
     <div ref="filterCardRef" class="flex-shrink-0 card mb-3 sm:mb-4 p-3 sm:p-6">

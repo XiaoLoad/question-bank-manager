@@ -9,6 +9,7 @@ import { useTrashStore } from '@/stores/trash'
 import ImportResultDialog from '@/components/ImportResultDialog.vue'
 import ImportCategoryDialog from '@/components/ImportCategoryDialog.vue'
 import SearchableSelect from '@/components/SearchableSelect.vue'
+import PageHeader from '@/components/PageHeader.vue'
 
 defineOptions({ name: 'DataManagement' })
 
@@ -449,10 +450,12 @@ async function batchDeleteByDate() {
 
 <template>
   <div>
-    <div class="mb-8">
-      <h1 class="text-2xl font-bold text-notion-text dark:text-notion-text-dark">数据管理</h1>
-      <p class="text-sm text-notion-muted dark:text-notion-muted-dark mt-1">导入导出、备份与批量操作</p>
-    </div>
+    <PageHeader
+      eyebrow="数据资产"
+      eyebrow-en="DATA OPERATIONS"
+      title="数据管理"
+      description="数据库切换、备份与导入导出；批量操作前请先确认影响范围。"
+    />
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- Database Settings -->

@@ -9,6 +9,7 @@ import { usePagination } from '@/composables/usePagination'
 import PaginationBar from '@/components/PaginationBar.vue'
 import SearchableSelect from '@/components/SearchableSelect.vue'
 import { useListSwitch } from '@/composables/useListSwitch'
+import PageHeader from '@/components/PageHeader.vue'
 
 defineOptions({ name: 'Categories' })
 
@@ -216,11 +217,13 @@ async function doDelete() {
 
 <template>
   <div class="lg:h-full flex flex-col">
-    <!-- Header (fixed) -->
-    <div class="flex-shrink-0 mb-8">
-      <h1 class="text-2xl font-bold text-notion-text dark:text-notion-text-dark">分类管理</h1>
-      <p class="text-sm text-notion-muted dark:text-notion-muted-dark mt-1">管理题目的分类标签</p>
-    </div>
+    <PageHeader
+      class="flex-shrink-0"
+      eyebrow="知识结构"
+      eyebrow-en="TAXONOMY"
+      title="分类管理"
+      description="管理题目的分类标签，让每一道题各归其位。"
+    />
 
     <!-- Toolbar: search + add (fixed) -->
     <div class="flex-shrink-0 card mb-4">

@@ -3,6 +3,8 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import avatarUrl from '@/assets/images/test.jpg'
 import Skeleton from '@/components/Skeleton.vue'
+import PageHeader from '@/components/PageHeader.vue'
+import SectionHeader from '@/components/SectionHeader.vue'
 import { useApi } from '@/composables/useApi'
 
 defineOptions({ name: 'About' })
@@ -161,25 +163,24 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="about-page max-w-5xl mx-auto">
+  <div class="about-page">
 
     <!-- ========== 页头 ========== -->
-    <header class="anim-rise flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 sm:gap-4 mb-6 sm:mb-8">
-      <div class="min-w-0">
-        <h1 class="text-xl sm:text-2xl font-bold text-notion-text dark:text-notion-text-dark">关于</h1>
-        <p class="text-xs sm:text-sm text-notion-muted dark:text-notion-muted-dark mt-1">
-          认识这个项目，以及把它一点点搭起来的人。
-        </p>
-      </div>
-      <div class="flex items-center gap-2 flex-shrink-0">
+    <PageHeader
+      eyebrow="项目档案"
+      eyebrow-en="THE PROJECT"
+      title="关于"
+      description="认识这个项目，以及把它一点点搭起来的人。"
+    >
+      <template #actions>
         <span class="release-pill">
           <svg class="release-pill-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.7" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/>
           </svg>
           <span class="min-w-0 truncate font-mono tabular-nums">{{ appVersion }}</span>
         </span>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <!-- ========== 作者 ========== -->
     <section
@@ -285,12 +286,7 @@ onBeforeUnmount(() => {
 
     <!-- ========== 01 关于项目 ========== -->
     <section class="section" data-reveal>
-      <div class="sec-head">
-        <span class="sec-index">01</span>
-        <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">关于项目</h2>
-        <span class="sec-line" aria-hidden="true"></span>
-        <p class="sec-hint hidden sm:block">从刷课题库维护到独立系统</p>
-      </div>
+      <SectionHeader index="01" title="关于项目" hint="从刷课题库维护到独立系统" />
 
       <div class="card p-6 sm:p-8">
         <div class="grid gap-8 lg:grid-cols-[minmax(0,210px)_minmax(0,1fr)] lg:gap-12">
@@ -359,12 +355,7 @@ onBeforeUnmount(() => {
 
     <!-- ========== 02 核心能力 ========== -->
     <section class="section" data-reveal>
-      <div class="sec-head">
-        <span class="sec-index">02</span>
-        <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">核心能力</h2>
-        <span class="sec-line" aria-hidden="true"></span>
-        <p class="sec-hint hidden sm:block">管理、练习与对接，形成一套闭环</p>
-      </div>
+      <SectionHeader index="02" title="核心能力" hint="管理、练习与对接，形成一套闭环" />
 
       <div class="grid gap-4 sm:grid-cols-3">
         <article v-for="(feat, i) in features" :key="feat.title" class="feature-card">
@@ -383,12 +374,7 @@ onBeforeUnmount(() => {
 
     <!-- ========== 03 技术底座 ========== -->
     <section class="section" data-reveal>
-      <div class="sec-head">
-        <span class="sec-index">03</span>
-        <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">技术底座</h2>
-        <span class="sec-line" aria-hidden="true"></span>
-        <p class="sec-hint hidden sm:block">轻量、可控，覆盖界面到部署</p>
-      </div>
+      <SectionHeader index="03" title="技术底座" hint="轻量、可控，覆盖界面到部署" />
 
       <div class="tech-panel">
         <div class="tech-note">
@@ -427,12 +413,7 @@ onBeforeUnmount(() => {
 
     <!-- ========== 04 版本记录 ========== -->
     <section class="section" data-reveal>
-      <div class="sec-head">
-        <span class="sec-index">04</span>
-        <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">版本记录</h2>
-        <span class="sec-line" aria-hidden="true"></span>
-        <p class="sec-hint hidden sm:block">持续更新，保持轻盈</p>
-      </div>
+      <SectionHeader index="04" title="版本记录" hint="持续更新，保持轻盈" />
 
       <div class="card p-0 overflow-hidden">
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 px-6 sm:px-8 py-6">
@@ -487,12 +468,7 @@ onBeforeUnmount(() => {
 
     <!-- ========== 05 友情链接 ========== -->
     <section class="section" data-reveal>
-      <div class="sec-head">
-        <span class="sec-index">05</span>
-        <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">友情链接</h2>
-        <span class="sec-line" aria-hidden="true"></span>
-        <p class="sec-hint hidden sm:block">同行者与他们做的东西</p>
-      </div>
+      <SectionHeader index="05" title="友情链接" hint="同行者与他们做的东西" />
 
       <div class="grid gap-4 sm:grid-cols-2">
         <a
@@ -1051,35 +1027,9 @@ onBeforeUnmount(() => {
 }
 
 /* ========== 区块标题 ========== */
-.sec-head {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-bottom: 14px;
-}
-
-.sec-index {
-  color: color-mix(in srgb, var(--theme-accent) 75%, var(--theme-muted));
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-}
-
-.sec-line {
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, var(--theme-border), color-mix(in srgb, var(--theme-border) 20%, transparent));
-}
-
-.sec-hint {
-  color: var(--theme-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
 /* ========== 项目故事 ========== */
 .story-lead {
+  max-width: 68ch;
   font-size: 15px;
   font-weight: 500;
   line-height: 1.75;
@@ -1541,6 +1491,10 @@ onBeforeUnmount(() => {
 
 .log-toggle.is-open .chevron {
   transform: rotate(180deg);
+}
+
+.changelog-body :deep(.markdown-body) {
+  max-width: 68ch;
 }
 
 .changelog-body :deep(a) {

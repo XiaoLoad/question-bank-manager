@@ -5,6 +5,7 @@ import { useApi } from '@/composables/useApi'
 import { useThemeStore } from '@/stores/theme'
 import { useAuthStore } from '@/stores/auth'
 import Skeleton from '@/components/Skeleton.vue'
+import PageHeader from '@/components/PageHeader.vue'
 // Tree-shake Chart.js — 只注册实际用到的图表类型
 import {
   Chart,
@@ -423,27 +424,30 @@ function reload() {
 
 <template>
   <div>
-    <div class="flex items-end justify-between mb-6 flex-wrap gap-3">
-      <div>
-        <h1 class="text-2xl font-bold text-notion-text dark:text-notion-text-dark">仪表盘</h1>
-        <p class="text-sm text-notion-muted dark:text-notion-muted-dark mt-1">题库数据概览</p>
-      </div>
-      <button
-        class="px-3 py-1.5 text-sm rounded-btn border border-notion-border dark:border-notion-border-dark text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
-        :disabled="refreshing"
-        @click="reload"
-      >
-        <svg
-          class="w-3.5 h-3.5"
-          :class="refreshing && 'animate-spin'"
-          fill="none" stroke="currentColor" viewBox="0 0 24 24"
-          aria-hidden="true"
+    <PageHeader
+      eyebrow="数据总览"
+      eyebrow-en="OVERVIEW"
+      title="仪表盘"
+      description="题库规模、增长趋势与用户活跃度的即时切面。"
+    >
+      <template #actions>
+        <button
+          class="px-3 py-1.5 text-sm rounded-btn border border-notion-border dark:border-notion-border-dark text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+          :disabled="refreshing"
+          @click="reload"
         >
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-14.06-3.06L4 8M4 15a8 8 0 0014.06 3.06L20 16"/>
-        </svg>
-        {{ refreshing ? '刷新中' : '刷新' }}
-      </button>
-    </div>
+          <svg
+            class="w-3.5 h-3.5"
+            :class="refreshing && 'animate-spin'"
+            fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v6h6M20 20v-6h-6M20 9a8 8 0 00-14.06-3.06L4 8M4 15a8 8 0 0014.06 3.06L20 16"/>
+          </svg>
+          {{ refreshing ? '刷新中' : '刷新' }}
+        </button>
+      </template>
+    </PageHeader>
 
     <!-- 首屏骨架：结构与真实布局一一对应，避免加载完成时布局跳动 -->
     <template v-if="loading">

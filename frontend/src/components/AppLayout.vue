@@ -106,7 +106,7 @@ onMounted(loadFooter)
       </header>
 
       <div class="flex-1 min-w-0 flex flex-col lg:min-h-0">
-        <main :class="['lg:flex-1 lg:overflow-y-auto', showSidebar ? 'p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full' : '']">
+        <main :class="['lg:flex-1 lg:overflow-y-auto', showSidebar ? 'app-main' : '']">
           <AnnouncementBanner v-if="showBanner" />
           <slot />
         </main>
