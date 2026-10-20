@@ -655,7 +655,7 @@ onBeforeRouteLeave(async () => {
             <p class="side-label">配置概览</p>
             <div class="side-body">
               <div class="ring-wrap" :title="`已填写 ${Math.round((completion / 100) * completenessFields.length)} / ${completenessFields.length} 项内容`">
-                <svg class="ring" viewBox="0 0 76 76" role="img" :aria-label="`配置完整度 ${completion}%`">
+                <svg class="ring-svg" viewBox="0 0 76 76" role="img" :aria-label="`配置完整度 ${completion}%`">
                   <defs>
                     <linearGradient id="ss-ring-grad" x1="0" y1="0" x2="1" y2="1">
                       <stop class="ring-stop-a" offset="0%" />
@@ -1776,7 +1776,7 @@ onBeforeRouteLeave(async () => {
   height: 76px;
 }
 
-.ring {
+.ring-svg {
   width: 76px;
   height: 76px;
 }
