@@ -352,7 +352,7 @@ async function handleReset() {
 
 /* ========== 动效 ========== */
 
-// 光斑跟随指针，仅在允许动效时启用
+// 光斑跟随指针；坐标保留在最后位置，移出时由 CSS 原地淡出
 function moveSpotlight(event) {
   if (reduceMotion.value) return
   const el = event.currentTarget
@@ -361,15 +361,10 @@ function moveSpotlight(event) {
   const y = event.clientY - rect.top
   if (pointerFrame) cancelAnimationFrame(pointerFrame)
   pointerFrame = requestAnimationFrame(() => {
+    pointerFrame = 0
     el.style.setProperty('--mx', `${x}px`)
     el.style.setProperty('--my', `${y}px`)
   })
-}
-
-function resetSpotlight(event) {
-  const el = event.currentTarget
-  el?.style.removeProperty('--mx')
-  el?.style.removeProperty('--my')
 }
 
 // 滚动入场：进入视口后只触发一次
@@ -594,7 +589,6 @@ onBeforeRouteLeave(async () => {
         style="--d: 200ms"
         aria-label="站点实时预览"
         @pointermove="moveSpotlight"
-        @pointerleave="resetSpotlight"
       >
         <span class="console-orb console-orb--a" aria-hidden="true" />
         <span class="console-orb console-orb--b" aria-hidden="true" />
