@@ -67,6 +67,19 @@ const fieldLabels = {
 const SITE_NAME_MAX = 30
 const SITE_DESC_MAX = 60
 
+// 文本字段统一清理首尾空白；数字、开关等字段不参与
+const TRIM_FIELDS = ['site_name', 'site_description', 'app_version', 'announcement_modal', 'announcement_banner', 'footer_text']
+const TRIM_FIELD_SET = new Set(TRIM_FIELDS)
+
+function trimText(value) {
+  return String(value ?? '').trim()
+}
+
+function trimField(key) {
+  if (!TRIM_FIELD_SET.has(key)) return
+  staged[key] = trimText(staged[key])
+}
+
 const pageRef = ref(null)
 const chipsRef = ref(null)
 
@@ -137,7 +150,9 @@ function typeSignature(value) {
 
 function isFieldDirty(key) {
   if (key === 'footer_hitokoto_types') return typeSignature(staged[key]) !== typeSignature(original[key])
-  return !sameValue(staged[key], original[key])
+  const a = TRIM_FIELD_SET.has(key) ? trimText(staged[key]) : staged[key]
+  const b = TRIM_FIELD_SET.has(key) ? trimText(original[key]) : original[key]
+  return !sameValue(a, b)
 }
 
 // 逐字段对比暂存值与基线
@@ -262,14 +277,14 @@ function revertField(key) {
 
 // 将接口数据写入暂存（布尔字段统一为布尔）
 function applyToStaged(data) {
-  staged.site_name = data.site_name || ''
-  staged.site_description = data.site_description || ''
-  staged.announcement_modal = data.announcement_modal || ''
+  staged.site_name = trimText(data.site_name)
+  staged.site_description = trimText(data.site_description)
+  staged.announcement_modal = trimText(data.announcement_modal)
   staged.announcement_modal_enabled = data.announcement_modal_enabled || false
-  staged.announcement_banner = data.announcement_banner || ''
+  staged.announcement_banner = trimText(data.announcement_banner)
   staged.announcement_banner_enabled = data.announcement_banner_enabled || false
-  staged.app_version = data.app_version || 'v1.0.0'
-  staged.footer_text = data.footer_text || ''
+  staged.app_version = trimText(data.app_version) || 'v1.0.0'
+  staged.footer_text = trimText(data.footer_text)
   staged.footer_hitokoto = data.footer_hitokoto || false
   staged.footer_hitokoto_types = data.footer_hitokoto_types || 'a.b.c.d.e.f.g.h.i.j.k.l'
   staged.footer_hitokoto_cache_minutes = data.footer_hitokoto_cache_minutes || 5
@@ -294,7 +309,8 @@ async function loadSettings() {
 
 // 保存：仅提交已变更字段（布尔转字符串），成功后更新基线
 async function handleSave() {
-  if (!hasUnsavedChanges.value || saving.value) return
+  if (saving.value) return
+  TRIM_FIELDS.forEach(trimField)
   clampCache()
   // 归一化后可能已无实际差异（例如只清空缓存时长又回到默认值）
   if (!hasUnsavedChanges.value) return
@@ -733,6 +749,7 @@ onBeforeRouteLeave(async () => {
                         id="ss-site-name"
                         v-model="staged.site_name"
                         type="text"
+                        @blur="trimField('site_name')"
                         class="field-input"
                         :maxlength="SITE_NAME_MAX"
                         placeholder="题库管理"
@@ -758,6 +775,7 @@ onBeforeRouteLeave(async () => {
                         id="ss-app-version"
                         v-model="staged.app_version"
                         type="text"
+                        @blur="trimField('app_version')"
                         class="field-input"
                         maxlength="20"
                         placeholder="v1.0.0"
@@ -792,6 +810,7 @@ onBeforeRouteLeave(async () => {
                         id="ss-site-desc"
                         v-model="staged.site_description"
                         type="text"
+                        @blur="trimField('site_description')"
                         class="field-input"
                         :maxlength="SITE_DESC_MAX"
                         placeholder="Question Bank"
@@ -859,6 +878,7 @@ onBeforeRouteLeave(async () => {
                       id="ss-modal"
                       v-model="staged.announcement_modal"
                       rows="6"
+                      @blur="trimField('announcement_modal')"
                       class="textarea"
                       placeholder="输入弹窗公告内容，支持 Markdown 语法…"
                       spellcheck="false"
@@ -927,6 +947,7 @@ onBeforeRouteLeave(async () => {
                       id="ss-banner"
                       v-model="staged.announcement_banner"
                       rows="3"
+                      @blur="trimField('announcement_banner')"
                       class="textarea textarea--short"
                       placeholder="简短提醒，如：系统维护中，预计 22:00 恢复…"
                       spellcheck="false"
@@ -966,6 +987,7 @@ onBeforeRouteLeave(async () => {
                       id="ss-footer-text"
                       v-model="staged.footer_text"
                       type="text"
+                      @blur="trimField('footer_text')"
                       class="field-input"
                       placeholder="© 2026 题库管理 · All rights reserved."
                       autocomplete="off"
