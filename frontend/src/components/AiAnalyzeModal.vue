@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import gsap from 'gsap'
 import { useAiTaskStore } from '@/stores/aiTask'
+import { aiCollapseMotion, prefersReducedMotion } from '@/utils/motionTokens'
 
 const props = defineProps({
   question: { type: Object, required: true },
@@ -17,6 +18,7 @@ const aiTask = useAiTaskStore()
 const modalRef = ref(null)
 const overlayRef = ref(null)
 const contentRef = ref(null)
+const headerRef = ref(null)
 const promptRef = ref(null)
 const responseRef = ref(null)
 
@@ -38,19 +40,60 @@ let charQueue = []
 let alive = true
 
 // GSAP 入场动画
-const enterAnimation = () => {
+// fromBall: 弹窗从悬浮球槽位"展开"（由收拢动画反向播放，构成同一对轨迹）
+const enterAnimation = (fromBall = false) => {
+  const modal = modalRef.value
+  const overlay = overlayRef.value
   const tl = gsap.timeline()
 
-  tl.fromTo(overlayRef.value,
+  // 蒙层淡入逐帧叠加 backdrop-blur（全视口模糊）在低配机上会掉帧：
+  // 入场动画期间先关掉，时间轴末尾恢复景深
+  overlay.style.backdropFilter = 'none'
+  overlay.style.webkitBackdropFilter = 'none'
+
+  tl.fromTo(overlay,
     { opacity: 0 },
     { opacity: 1, duration: 0.3, ease: 'power2.out' }
   )
 
-  tl.fromTo(modalRef.value,
-    { opacity: 0, scale: 0.9, y: 30 },
-    { opacity: 1, scale: 1, y: 0, duration: 0.4, ease: 'back.out(1.7)' },
-    '-=0.15'
-  )
+  if (fromBall && !prefersReducedMotion()) {
+    // 起点 = 收拢动画的终点（右下角悬浮球槽位、球尺寸、圆角胶囊）
+    const m = aiCollapseMotion
+    const ball = m.ballCenter()
+    const rect = modal.getBoundingClientRect()
+    gsap.set(modal, { transformOrigin: 'center center', willChange: 'transform, opacity' })
+
+    // 与落地严格镜像：起终点同一对，且与蒙层淡入同刻起步
+    tl.fromTo(modal,
+      {
+        x: ball.x - (rect.left + rect.width / 2),
+        y: ball.y - (rect.top + rect.height / 2),
+        scaleX: m.ballSize / rect.width,
+        scaleY: m.ballSize / rect.height,
+        borderRadius: 9999,
+        opacity: 0.25,
+      },
+      {
+        x: 0, y: 0, scaleX: 1, scaleY: 1,
+        opacity: 1, duration: m.travel + 0.06, ease: 'power3.out',
+        clearProps: 'transform,willChange',
+      },
+      0
+    )
+    // 圆角只在前半程揉开（此刻卡片还接近球大小），避免大尺寸逐帧重绘圆角+阴影
+    tl.to(modal, {
+      borderRadius: 12,
+      duration: (m.travel + 0.06) * 0.45,
+      ease: 'power1.inOut',
+      onComplete: () => { modal.style.borderRadius = '' },
+    }, 0)
+  } else {
+    tl.fromTo(modalRef.value,
+      { opacity: 0, scale: 0.9, y: 30 },
+      { opacity: 1, scale: 1, y: 0, duration: 0.4, ease: 'back.out(1.7)' },
+      '-=0.15'
+    )
+  }
 
   tl.fromTo(contentRef.value,
     { opacity: 0, y: 15 },
@@ -58,25 +101,98 @@ const enterAnimation = () => {
     '-=0.2'
   )
 
+  tl.call(() => {
+    overlay.style.backdropFilter = ''
+    overlay.style.webkitBackdropFilter = ''
+  })
+
   return tl
 }
 
-// GSAP 退场动画 - 简单关闭
+// GSAP 退场动画 - 整张卡片被"收拢"进右下角悬浮球
+// 时间轴：内容/标题先隐去 → 位移+非等比缩放飞向球槽位（全程纯 transform）
+// → 末段小尺寸时再揉成胶囊圆角 → 落地前 settleFade 淡出，与球的凝出交叉淡化。
+// 卡片 z-[9999] 盖在悬浮球 z-[9998] 之上，落地瞬间球在被压位置做吸收弹跳，
+// 视觉上就是弹窗"变成"了那颗球。
 const leaveAnimation = () => {
   return new Promise((resolve) => {
+    const modal = modalRef.value
+    const overlay = overlayRef.value
+    if (!modal || !overlay) { resolve(); return }
+
+    // 蒙层自带 backdrop-blur（Tailwind backdrop-blur-sm）：全视口逐帧模糊
+    // 叠加透明度变化是退场最大的掉帧源，动画一开始就关掉。
+    // 本组件随父级 v-if 马上卸载，无需恢复。
+    overlay.style.backdropFilter = 'none'
+    overlay.style.webkitBackdropFilter = 'none'
+
+    if (prefersReducedMotion()) {
+      gsap.to([overlay, modal], {
+        opacity: 0, duration: 0.2, ease: 'power1.out', onComplete: resolve,
+      })
+      return
+    }
+
+    // 收拢交接的前提：右下角真的"有球可落"——存在与本题对应的进行中/已完成任务。
+    // 悬浮球完成后 3 秒自动隐藏并 clearTask（或纯查看缓存结果时任务本就为空），
+    // 此时槽位上没有球，飞过去会变成"卡片缩进空地"，破坏视觉逻辑。
+    // 无接收方时退化为原地淡出 + 轻微收缩，不再 signalCollapse、不再飞向右下角。
+    const hasBallTarget = aiTask.task?.questionId === props.question?.id
+    if (!hasBallTarget) {
+      const tl = gsap.timeline({ onComplete: resolve })
+      tl.to([contentRef.value, headerRef.value], {
+        opacity: 0, duration: 0.14, ease: 'power2.in',
+      }, 0)
+      tl.to(overlay, {
+        opacity: 0, duration: 0.24, ease: 'power1.out',
+      }, 0.02)
+      tl.to(modal, {
+        opacity: 0, scale: 0.96, duration: 0.2, ease: 'power2.in',
+        transformOrigin: 'center center',
+      }, 0.04)
+      return
+    }
+
+    const m = aiCollapseMotion
+    const ball = m.ballCenter()
+    const rect = modal.getBoundingClientRect()
+
+    // 卡片提升为合成层：飞行只走 transform/opacity，长文本子树不逐帧重绘
+    gsap.set(modal, { transformOrigin: 'center center', willChange: 'transform, opacity' })
+
+    // 通知悬浮球：本弹窗正在收拢进你，播吸收而不是普通弹出（避免双入场打架）
+    aiTask.signalCollapse(props.question?.id)
+
     const tl = gsap.timeline({ onComplete: resolve })
 
-    tl.to(contentRef.value, {
-      opacity: 0, y: -10, duration: 0.15, ease: 'power2.in'
-    })
+    // 1) 内容隐去 + 蒙层提前淡出（否则球隔着蒙层弹出，缺少落地感）
+    tl.to([contentRef.value, headerRef.value], {
+      opacity: 0, y: -6, duration: 0.16, ease: 'power2.in',
+    }, 0)
+    tl.to(overlay, {
+      opacity: 0, duration: m.overlayFade, ease: 'power2.out',
+    }, 0.04)
 
-    tl.to(modalRef.value, {
-      opacity: 0, scale: 0.95, y: 20, duration: 0.2, ease: 'power2.in'
-    }, '-=0.1')
+    // 2) 收拢飞行：全程只动 transform（位移 + 非等比缩放到球位球径）
+    tl.to(modal, {
+      x: ball.x - (rect.left + rect.width / 2),
+      y: ball.y - (rect.top + rect.height / 2),
+      scaleX: m.ballSize / rect.width,
+      scaleY: m.ballSize / rect.height,
+      duration: m.travel,
+      ease: 'power3.inOut',
+    }, m.flightStart)
 
-    tl.to(overlayRef.value, {
-      opacity: 0, duration: 0.15, ease: 'power2.in'
-    }, '-=0.1')
+    // 3) 圆角后段再揉：border-radius 变化会逐帧重绘阴影与圆角，
+    //    留到卡片已经缩得很小再做，重绘面积可忽略（全程动画的卡顿源之一）
+    tl.to(modal, {
+      borderRadius: 9999,
+      duration: m.travel * 0.5,
+      ease: 'power1.inOut',
+    }, m.flightStart + m.travel * 0.5)
+
+    // 4) 落地前 settleFade 窗口淡出，恰好落地一刻消失，与球的凝出交叉淡化
+    tl.to(modal, { opacity: 0, duration: m.settleFade, ease: 'power1.in' }, m.landAt() - m.settleFade)
   })
 }
 
@@ -124,6 +240,9 @@ const addToQueue = (text) => {
 const syncFromStore = () => {
   const task = aiTask.task
   if (!task) return
+  // 关闭动画启动后（alive=false）不再把 store 增量写回响应式 DOM：
+  // 内容此刻已在淡出，逐帧重渲染只会和飞行动画抢主线程
+  if (!alive) return
 
   loading.value = task.status === 'generating' && !task.promptText
   promptText.value = task.promptText || ''
@@ -247,6 +366,11 @@ const stopGeneration = () => {
 const handleClose = async () => {
   clearTimeout(typewriterTimer)
   isTyping.value = false
+  // 关键：动画期间流式仍在推送。若只是清掉打字机，addToQueue 会看到
+  // isTyping=false 又把打字机重新启动，卡片飞行途中逐帧改文本+滚动 = 掉帧。
+  // 置 alive=false：关闭后到达的字符直接写 store（重开时由 syncFromStore 恢复），
+  // 打字机彻底停摆直到组件卸载。
+  alive = false
 
   // 如果任务还在运行，不要取消它
   // 只关闭弹窗，悬浮球会自动显示
@@ -279,7 +403,11 @@ const handleRegenerate = () => {
 
 onMounted(async () => {
   await nextTick()
-  enterAnimation()
+  // 悬浮球点击重开 → 从球槽位反向展开；普通打开 → 原地弹出。
+  // 标记一次性消费，避免后续普通打开误用展开轨迹。
+  const fromBall = aiTask.expandFromBall
+  aiTask.expandFromBall = false
+  enterAnimation(fromBall)
 
   // 检查是否有正在运行的任务（当前题目）
   if (aiTask.task?.questionId === props.question.id) {
@@ -333,7 +461,7 @@ onBeforeUnmount(() => {
         class="relative w-full max-w-2xl max-h-[85vh] bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-notion-border dark:border-notion-border-dark flex flex-col overflow-hidden"
       >
         <!-- Header -->
-        <div class="flex-shrink-0 px-4 py-3 border-b border-notion-border dark:border-notion-border-dark flex items-center justify-between">
+        <div ref="headerRef" class="flex-shrink-0 px-4 py-3 border-b border-notion-border dark:border-notion-border-dark flex items-center justify-between">
           <div class="flex items-center gap-2">
             <svg class="w-4 h-4 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>

@@ -14,6 +14,22 @@ export const useAiTaskStore = defineStore('aiTask', () => {
   // seq 递增保证每次点击都是新对象，详情页的 watch 一定会被触发
   const reopenRequest = ref(null)
 
+  // 弹窗开始"收拢进悬浮球"的广播：{ questionId, seq }
+  // 悬浮球监听它来抑制普通入场、改播吸收动画；lastCollapseAt 供
+  // checkAndShow 判断"刚刚收拢过"，避免两条 watcher 时序竞争
+  const collapseSignal = ref(null)
+  const lastCollapseAt = ref(0)
+  let collapseSeq = 0
+
+  function signalCollapse(questionId) {
+    lastCollapseAt.value = Date.now()
+    collapseSignal.value = { questionId, seq: ++collapseSeq }
+  }
+
+  // 弹窗下一次入场是否要"从悬浮球槽位展开"（点悬浮球/生成中重开时置 true，
+  // 弹窗 enterAnimation 消费后复位），与收拢动画构成可逆的视觉闭环
+  const expandFromBall = ref(false)
+
   // AbortController for cancelling
   let abortController = null
 
@@ -98,6 +114,8 @@ export const useAiTaskStore = defineStore('aiTask', () => {
   // 发起"重新展开弹窗"请求（悬浮球点击时调用）
   let reopenSeq = 0
   function requestReopen(questionId) {
+    // 弹窗入场要反过来"从悬浮球槽位展开"，与收拢动画构成同一对轨迹
+    expandFromBall.value = true
     reopenRequest.value = { questionId, seq: ++reopenSeq }
   }
 
@@ -110,6 +128,9 @@ export const useAiTaskStore = defineStore('aiTask', () => {
     task,
     modalOpen,
     reopenRequest,
+    collapseSignal,
+    lastCollapseAt,
+    expandFromBall,
     isGenerating,
     isCompleted,
     hasTask,
@@ -121,6 +142,7 @@ export const useAiTaskStore = defineStore('aiTask', () => {
     cancelTask,
     clearTask,
     setModalOpen,
+    signalCollapse,
     requestReopen,
     consumeReopen,
   }
