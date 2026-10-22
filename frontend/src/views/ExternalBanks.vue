@@ -1,9 +1,12 @@
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useApi } from '@/composables/useApi'
 import { useToastStore } from '@/stores/toast'
 import { useConfirmStore } from '@/stores/confirm'
 import PageHeader from '@/components/PageHeader.vue'
+import SectionHeader from '@/components/SectionHeader.vue'
+import gsap from 'gsap'
+import { gsapEasing, prefersReducedMotion } from '@/utils/motionTokens'
 
 defineOptions({ name: 'ExternalBanks' })
 
@@ -11,7 +14,8 @@ const api = useApi()
 const toast = useToastStore()
 const confirmDialog = useConfirmStore()
 
-// Config
+// ========== Config ==========
+
 const config = reactive({
   external_enabled: true,
   external_api_key: '',
@@ -22,6 +26,7 @@ const config = reactive({
   auto_save: true,
 })
 const configLoading = ref(true)
+const loadError = ref('')
 const saving = ref(false)
 
 // API key visibility
@@ -33,12 +38,21 @@ const maskedKey = computed(() => {
   return k.slice(0, 4) + '••••••••' + k.slice(-4)
 })
 
-// Stats
+// Stats（stats.today 为按日重置的日期键，流量数字取各来源 total）
 const stats = ref({
   today: '',
   yatori: { total: 0, local: 0, ai: 0, notFound: 0 },
   ocs: { total: 0, local: 0, ai: 0, notFound: 0 },
+  semaphore: { current: 0, waiting: 0 },
 })
+const sumTotal = computed(() => num(stats.value.yatori?.total) + num(stats.value.ocs?.total))
+const sumLocal = computed(() => num(stats.value.yatori?.local) + num(stats.value.ocs?.local))
+const sumAi = computed(() => num(stats.value.yatori?.ai) + num(stats.value.ocs?.ai))
+const sumMiss = computed(() => num(stats.value.yatori?.notFound) + num(stats.value.ocs?.notFound))
+const semCurrent = computed(() => num(stats.value.semaphore?.current))
+const semWaiting = computed(() => num(stats.value.semaphore?.waiting))
+// 并发槽位可视化：最多画 24 格，避免极端配置把面板撑坏
+const slotCount = computed(() => Math.min(Math.max(num(config.max_concurrent_ai), 1), 24))
 
 // Logs
 const logs = ref([])
@@ -77,17 +91,30 @@ apiQueSetting:
 
 async function loadConfig() {
   configLoading.value = true
+  loadError.value = ''
   try {
     const data = await api.getExternalConfig()
     Object.assign(config, data)
-  } catch {} finally {
+  } catch {
+    loadError.value = '无法读取接口配置，请确认服务是否正常，然后重试。'
+  } finally {
     configLoading.value = false
+    if (!loadError.value) await afterRender()
   }
+}
+
+async function afterRender() {
+  await nextTick()
+  initReveal()
+  applyStats()
+  applyFlow()
 }
 
 async function loadStats() {
   try {
     stats.value = await api.getExternalStats()
+    await nextTick()
+    applyStats()
   } catch {}
 }
 
@@ -98,6 +125,8 @@ async function loadLogs() {
     if (logFilter.source) params.source = logFilter.source
     if (logFilter.result) params.result = logFilter.result
     logs.value = await api.getExternalLogs(params)
+    await nextTick()
+    revealLogRows()
   } catch {} finally {
     logsLoading.value = false
   }
@@ -117,10 +146,14 @@ async function updateConfig(key, value) {
   }
 }
 
-async function updateNumberConfig(key, value) {
-  const num = parseInt(value)
-  if (isNaN(num) || num < 1) return
-  await updateConfig(key, num)
+async function updateNumberConfig(key, value, input) {
+  const num2 = parseInt(value)
+  if (isNaN(num2) || num2 < 1) {
+    if (input) input.value = config[key]
+    toast.error('该项至少为 1，已恢复原值')
+    return
+  }
+  await updateConfig(key, num2)
 }
 
 async function regenerateApiKey() {
@@ -136,6 +169,7 @@ async function regenerateApiKey() {
     const result = await api.regenerateExternalApiKey()
     config.external_api_key = result.api_key
     toast.success(result.message || '密钥已重新生成')
+    pulseGate()
   } catch {}
 }
 
@@ -163,21 +197,30 @@ async function clearAllLogs() {
   } catch {}
 }
 
-async function copyToClipboard(text, label) {
+// ========== Copy ==========
+
+const copied = reactive({})
+let copiedTimers = {}
+
+async function copyToClipboard(text, label, key = label) {
+  const done = () => {
+    toast.success(`${label}已复制到剪贴板`)
+    markCopied(key)
+  }
   // navigator.clipboard 仅在安全上下文（HTTPS/localhost）可用，HTTP 部署需降级 execCommand
   if (navigator.clipboard && window.isSecureContext) {
     try {
       await navigator.clipboard.writeText(text)
-      toast.success(`${label}已复制到剪贴板`)
+      done()
     } catch {
-      legacyCopy(text, label)
+      legacyCopy(text, label, key)
     }
     return
   }
-  legacyCopy(text, label)
+  legacyCopy(text, label, key)
 }
 
-function legacyCopy(text, label) {
+function legacyCopy(text, label, key = label) {
   const ta = document.createElement('textarea')
   ta.value = text
   ta.style.position = 'fixed'
@@ -194,9 +237,27 @@ function legacyCopy(text, label) {
   document.body.removeChild(ta)
   if (ok) {
     toast.success(`${label}已复制到剪贴板`)
+    markCopied(key)
   } else {
     toast.error('复制失败，请手动复制')
   }
+}
+
+function markCopied(label) {
+  copied[label] = true
+  clearTimeout(copiedTimers[label])
+  copiedTimers[label] = setTimeout(() => { copied[label] = false }, 1600)
+  if (!reduceMotion) {
+    const btn = pageRef.value?.querySelector(`[data-copy="${label}"]`)
+    if (btn) gsap.fromTo(btn, { scale: 0.9 }, { scale: 1, duration: 0.5, ease: gsapEasing.bounce, clearProps: 'scale' })
+  }
+}
+
+// ========== Formatters ==========
+
+function num(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
 }
 
 function formatTime(str) {
@@ -223,515 +284,1439 @@ function truncate(str, len = 30) {
   return str.length > len ? str.slice(0, len) + '...' : str
 }
 
-const resultLabel = { local: '本地', ai: 'AI', not_found: '未找到', disabled: '已禁用' }
-const resultColor = {
-  local: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
-  ai: 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-  not_found: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
-  disabled: 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500',
+function formatCost(ms) {
+  const n = num(ms)
+  if (n < 1000) return `${Math.round(n)} ms`
+  return `${(n / 1000).toFixed(1)} s`
 }
 
+function costClass(ms) {
+  const n = num(ms)
+  if (n < 100) return 'is-fast'
+  if (n < 2000) return 'is-slow'
+  return 'is-late'
+}
+
+const resultLabel = { local: '本地', ai: 'AI', not_found: '未找到', disabled: '已禁用' }
+const resultBadge = { local: 'is-local', ai: 'is-ai', not_found: 'is-miss', disabled: 'is-off' }
+
 const sourceLabel = { yatori: 'Yatori', ocs: 'OCS' }
+
+// ========== Motion ==========
+
+const pageRef = ref(null)
+const heroRef = ref(null)
+let reduceMotion = false
+let revealObserver = null
+let statsTimer = null
+let flowTweens = []
+let spotRaf = 0
+
+function initReveal() {
+  const page = pageRef.value
+  if (!page) return
+  const nodes = page.querySelectorAll('[data-reveal]')
+  if (reduceMotion || !('IntersectionObserver' in window)) {
+    nodes.forEach(el => el.classList.add('is-revealed'))
+    return
+  }
+  if (!revealObserver) {
+    revealObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('is-revealed')
+          revealObserver.unobserve(entry.target)
+        }
+      })
+    }, { threshold: 0.06, rootMargin: '0px 0px -4% 0px' })
+  }
+  nodes.forEach(el => {
+    if (!el.classList.contains('is-revealed')) revealObserver.observe(el)
+  })
+}
+
+function moveSpotlight(e) {
+  if (reduceMotion) return
+  const el = e.currentTarget
+  if (spotRaf) cancelAnimationFrame(spotRaf)
+  spotRaf = requestAnimationFrame(() => {
+    spotRaf = 0
+    const rect = el.getBoundingClientRect()
+    el.style.setProperty('--mx', `${e.clientX - rect.left}px`)
+    el.style.setProperty('--my', `${e.clientY - rect.top}px`)
+  })
+}
+
+// —— 链路流动：packet 沿导轨行进，开关决定通断（动效即状态）——
+
+const yatoriLive = computed(() => config.external_enabled && config.yatori_enabled)
+const ocsLive = computed(() => config.external_enabled && config.ocs_enabled)
+const trunkLive = computed(() => config.external_enabled)
+
+function applyFlow() {
+  const page = pageRef.value
+  if (!page || reduceMotion) return
+  flowTweens.forEach(t => t.kill())
+  flowTweens = []
+  page.querySelectorAll('.flow-carrier').forEach(el => {
+    const rail = el.closest('.rail')
+    const declared = rail ? getComputedStyle(rail).getPropertyValue('--flow-axis').trim() : ''
+    const vertical = declared ? declared === 'y' : !!rail && rail.offsetHeight > rail.offsetWidth
+    const axis = vertical ? 'yPercent' : 'xPercent'
+    // 清掉 CSS 里可能残留的位移：GSAP 会把已有 transform 解析成像素 x/y，
+    // 再叠加 xPercent/yPercent 会让数据包跑出轨道一倍轨长（表现为“数据包不见了”）。
+    gsap.set(el, { x: 0, y: 0, xPercent: 0, yPercent: 0 })
+    const delay = num(el.dataset.delay)
+    const dur = (vertical ? 1.15 : 2.6) + (el.dataset.slow === '1' ? 0.8 : 0)
+    flowTweens.push(gsap.fromTo(el,
+      { [axis]: -100 },
+      {
+        [axis]: 0,
+        duration: dur,
+        ease: 'none',
+        repeat: -1,
+        repeatDelay: 0.55 + (el.dataset.slow === '1' ? 0.3 : 0),
+        delay,
+      },
+    ))
+  })
+}
+
+let flowResize = 0
+function onFlowResize() {
+  clearTimeout(flowResize)
+  flowResize = setTimeout(applyFlow, 220)
+}
+
+function pulseGate() {
+  if (reduceMotion) return
+  const gate = pageRef.value?.querySelector('.gate-mark')
+  if (!gate) return
+  const tl = gsap.timeline()
+  tl.fromTo(gate, { scale: 1 }, { scale: 1.1, duration: 0.22, ease: gsapEasing.sharp })
+    .to(gate, { scale: 1, duration: 0.5, ease: gsapEasing.bounce })
+  gsap.fromTo(gate.querySelector('.gate-ring'),
+    { opacity: 0.9, scale: 1 },
+    { opacity: 0, scale: 1.9, duration: 0.8, ease: gsapEasing.smooth, clearProps: 'all' })
+}
+
+function flashKey() {
+  if (reduceMotion) return
+  const el = pageRef.value?.querySelector('[data-key-line]')
+  if (!el) return
+  gsap.fromTo(el, { autoAlpha: 0.35, y: 3 }, { autoAlpha: 1, y: 0, duration: 0.42, ease: gsapEasing.smooth, clearProps: 'transform' })
+}
+
+// —— 数字滚动 + 分布条：每次统计刷新都重新计时（动效即数据）——
+
+function tweenNumber(el, to) {
+  const target = num(to)
+  const from = num(el.dataset.cur)
+  if (from === target) return
+  if (reduceMotion) {
+    el.textContent = String(target)
+    el.dataset.cur = String(target)
+    return
+  }
+  const proxy = { v: from }
+  if (el._numTween) el._numTween.kill()
+  el._numTween = gsap.to(proxy, {
+    v: target,
+    duration: 0.85,
+    ease: gsapEasing.smooth,
+    onUpdate: () => { el.textContent = String(Math.round(proxy.v)) },
+    onComplete: () => { el.textContent = String(target); el.dataset.cur = String(target) },
+  })
+  el.dataset.cur = String(target)
+}
+
+function tweenBar(el, pct) {
+  const target = Math.max(0, Math.min(100, pct))
+  if (el._barTween) el._barTween.kill()
+  if (reduceMotion) {
+    el.style.width = `${target}%`
+    return
+  }
+  el._barTween = gsap.to(el, { width: `${target}%`, duration: 0.7, ease: gsapEasing.smooth })
+}
+
+function applyStats() {
+  const page = pageRef.value
+  if (!page) return
+  page.querySelectorAll('[data-stat]').forEach(el => {
+    const map = {
+      total: sumTotal.value,
+      'ans-local': sumLocal.value,
+      'ans-ai': sumAi.value,
+      'ans-miss': sumMiss.value,
+      'y-total': num(stats.value.yatori?.total),
+      'y-local': num(stats.value.yatori?.local),
+      'y-ai': num(stats.value.yatori?.ai),
+      'y-miss': num(stats.value.yatori?.notFound),
+      'o-total': num(stats.value.ocs?.total),
+      'o-local': num(stats.value.ocs?.local),
+      'o-ai': num(stats.value.ocs?.ai),
+      'o-miss': num(stats.value.ocs?.notFound),
+      'sem-cur': num(stats.value.semaphore?.current),
+      'sem-wait': num(stats.value.semaphore?.waiting),
+    }
+    tweenNumber(el, map[el.dataset.stat] ?? 0)
+  })
+  page.querySelectorAll('[data-bar]').forEach(el => {
+    const src = stats.value[el.dataset.bar] || { total: 0, local: 0, ai: 0, notFound: 0 }
+    const total = Math.max(num(src.total), num(src.local) + num(src.ai) + num(src.notFound), 1)
+    const bar = el.querySelector('.bar')
+    if (!bar) return
+    tweenBar(bar.querySelector('.bar-seg--local'), (num(src.local) / total) * 100)
+    tweenBar(bar.querySelector('.bar-seg--ai'), (num(src.ai) / total) * 100)
+    tweenBar(bar.querySelector('.bar-seg--miss'), (num(src.notFound) / total) * 100)
+  })
+  pulseSlots()
+}
+
+function pulseSlots() {
+  const page = pageRef.value
+  if (!page) return
+  const busy = Math.min(num(stats.value.semaphore?.current), slotCount.value)
+  page.querySelectorAll('.ai-slot').forEach((slot, i) => {
+    const on = i < busy
+    const was = slot.classList.contains('is-busy')
+    slot.classList.toggle('is-busy', on)
+    if (reduceMotion || !on || was) return
+    gsap.fromTo(slot, { scaleY: 0.55, opacity: 0.35 }, { scaleY: 1, opacity: 1, duration: 0.5, ease: gsapEasing.bounce })
+  })
+  const waitEl = page.querySelector('.ai-slots')
+  if (waitEl) waitEl.classList.toggle('is-waiting', num(stats.value.semaphore?.waiting) > 0)
+}
+
+function revealLogRows() {
+  if (reduceMotion || !pageRef.value) return
+  const rows = pageRef.value.querySelectorAll('.log-row')
+  if (!rows.length) return
+  gsap.killTweensOf(rows)
+  gsap.fromTo(rows,
+    { autoAlpha: 0, y: 8 },
+    {
+      autoAlpha: 1, y: 0,
+      duration: 0.42,
+      ease: gsapEasing.smooth,
+      stagger: { each: 0.018, limit: 22 },
+      clearProps: 'transform',
+    })
+}
+
+watch(() => config.external_enabled, () => { nextTick(pulseGate) })
+watch(showKey, () => { nextTick(flashKey) })
+
+// ========== 章节导航 ==========
+
+const SECTIONS = [
+  { nav: 0, index: '00', label: '调用链路' },
+  { nav: 1, index: '01', label: '接口安全' },
+  { nav: 2, index: '02', label: 'Yatori 对接' },
+  { nav: 3, index: '03', label: 'OCS 对接' },
+  { nav: 4, index: '04', label: 'AI 兜底参数' },
+  { nav: 5, index: '05', label: '查询日志' },
+]
+const activeNav = ref(0)
+let secRaf = 0
+let secLast = 0
+
+function measureNav() {
+  const page = pageRef.value
+  if (!page) return
+  const band = window.innerHeight * 0.36
+  let idx = 0
+  page.querySelectorAll('[data-nav]').forEach(el => {
+    if (el.getBoundingClientRect().top <= band) idx = Number(el.dataset.nav)
+  })
+  activeNav.value = idx
+}
+
+function trackSections() {
+  const now = performance.now()
+  if (now - secLast > 90) { secLast = now; measureNav(); return }
+  if (secRaf) return
+  secRaf = requestAnimationFrame(() => { secRaf = 0; secLast = performance.now(); measureNav() })
+}
+
+function jumpTo(idx) {
+  const page = pageRef.value
+  if (!page) return
+  const el = page.querySelector(`[data-nav="${idx}"]`)
+  if (!el) return
+  activeNav.value = idx
+  el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' })
+  if (reduceMotion) return
+  const ring = el.querySelector('.panel') || el
+  ring.classList.remove('is-located')
+  void ring.offsetWidth
+  ring.classList.add('is-located')
+  setTimeout(() => ring.classList.remove('is-located'), 1000)
+}
 
 // ========== Lifecycle ==========
 
 onMounted(async () => {
+  reduceMotion = prefersReducedMotion()
   await Promise.all([loadConfig(), loadStats(), loadLogs()])
+  await nextTick()
+  applyStats()
+  applyFlow()
+  initReveal()
+  window.addEventListener('scroll', trackSections, { passive: true, capture: true })
+  window.addEventListener('resize', onFlowResize, { passive: true })
+  trackSections()
   // Auto-refresh stats every 30s
-  setInterval(loadStats, 30000)
+  statsTimer = setInterval(loadStats, 30000)
+})
+
+onBeforeUnmount(() => {
+  if (statsTimer) clearInterval(statsTimer)
+  if (revealObserver) { revealObserver.disconnect(); revealObserver = null }
+  if (spotRaf) cancelAnimationFrame(spotRaf)
+  if (secRaf) cancelAnimationFrame(secRaf)
+  clearTimeout(flowResize)
+  window.removeEventListener('scroll', trackSections, { capture: true })
+  window.removeEventListener('resize', onFlowResize)
+  Object.values(copiedTimers).forEach(t => clearTimeout(t))
+  flowTweens.forEach(t => t.kill())
+  flowTweens = []
+  pageRef.value?.querySelectorAll('.log-row, .flow-carrier, [data-stat], .bar-seg').forEach(el => gsap.killTweensOf(el))
 })
 </script>
 
 <template>
-  <div>
+  <section class="external-page" ref="pageRef">
     <PageHeader
       eyebrow="外部生态"
       eyebrow-en="INTEGRATIONS"
       title="题库对接"
-      description="将本系统作为外部题库，供 Yatori、OCS 网课助手等工具调用。"
-    />
+      description="把这套题库变成可被调用的接口：Yatori 与 OCS 携带同一把密钥查询，本地命中优先，AI 兜底其后。"
+    >
+      <template #actions>
+        <span class="status-pill" :class="{ 'is-live': config.external_enabled && !saving, 'is-saving': saving }" role="status" aria-live="polite">
+          <i class="status-dot" aria-hidden="true" />
+          <span>{{ saving ? '保存中' : (config.external_enabled ? '接口运行中' : '接口已停用') }}</span>
+        </span>
+      </template>
+    </PageHeader>
 
-    <!-- Security Card -->
-    <div class="card mb-6">
-      <div class="flex items-center gap-3 mb-5">
-        <div class="w-9 h-9 rounded-btn bg-red-50 border border-red-200 dark:bg-red-900/30 dark:border-red-800 flex items-center justify-center flex-shrink-0">
-          <svg class="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-          </svg>
-        </div>
-        <div class="flex-1">
-          <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">接口安全</h2>
-          <p class="text-xs text-notion-muted dark:text-notion-muted-dark mt-0.5">外部题库接口需携带密钥调用，防止被扫描滥用</p>
-        </div>
-        <div class="flex items-center gap-2">
-          <span :class="[
-            'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium',
-            config.external_enabled
-              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-              : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
-          ]">
-            <span :class="['w-1.5 h-1.5 rounded-full', config.external_enabled ? 'bg-emerald-500' : 'bg-gray-400']"></span>
-            {{ config.external_enabled ? '接口已开启' : '接口已关闭' }}
+    <!-- 加载骨架 -->
+    <div v-if="configLoading" class="skeleton-wrap" aria-hidden="true">
+      <div class="skeleton sk-console"></div>
+      <div class="skeleton sk-panel"></div>
+      <div class="skeleton sk-panel"></div>
+    </div>
+
+    <!-- 加载失败 -->
+    <div v-else-if="loadError" class="error-block">
+      <p class="error-text">{{ loadError }}</p>
+      <button class="btn-quiet" @click="loadConfig">重试</button>
+    </div>
+
+    <template v-else>
+      <!-- ============ 章节导航指示器 ============ -->
+      <nav class="ex-nav" aria-label="章节导航">
+        <button
+          v-for="s in SECTIONS"
+          :key="s.nav"
+          type="button"
+          class="ex-nav-item"
+          :class="{ 'is-active': activeNav === s.nav }"
+          :aria-current="activeNav === s.nav ? 'true' : undefined"
+          :style="{ '--i': s.nav }"
+          @click="jumpTo(s.nav)"
+        >
+          <span class="ex-nav-tip"><i>{{ s.index }}</i>{{ s.label }}</span>
+          <span class="ex-nav-bar" aria-hidden="true"></span>
+        </button>
+      </nav>
+
+      <!-- ============ 链路 Console：动效即状态 ============ -->
+      <section class="console" ref="heroRef" data-nav="0" @mousemove="moveSpotlight" aria-label="接口调用链路">
+        <i class="console-orb console-orb--a" aria-hidden="true" />
+        <i class="console-orb console-orb--b" aria-hidden="true" />
+        <i class="console-grid" aria-hidden="true" />
+        <i class="console-spot" aria-hidden="true" />
+
+        <header class="window-bar">
+          <span class="window-dots" aria-hidden="true"><i /><i /><i /></span>
+          <span class="window-url">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            {{ baseUrl }}/api/external
           </span>
-          <button
-            @click="updateConfig('external_enabled', !config.external_enabled)"
-            :disabled="saving"
-            :class="[
-              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50',
-              config.external_enabled ? 'bg-notion-accent dark:bg-notion-accent-dark' : 'bg-gray-300 dark:bg-gray-600'
-            ]"
-          >
-            <span
-              :class="[
-                'inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200',
-                config.external_enabled ? 'translate-x-6' : 'translate-x-1'
-              ]"
-            />
-          </button>
-        </div>
-      </div>
+          <span v-if="stats.today" class="window-tag" aria-hidden="true">按日累计 · {{ stats.today }}</span>
+        </header>
 
-      <div class="space-y-3">
-        <p class="text-xs text-notion-muted dark:text-notion-muted-dark leading-relaxed">
-          总开关关闭后，下方所有对接接口立即停止响应（Yatori / OCS 查询返回"接口已禁用"）。
-          即使忘记关闭，未携带密钥的请求也会被拒绝，因此开启状态下同样安全。
-        </p>
-        <div>
-          <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">接口密钥</label>
-          <div class="flex flex-wrap gap-2">
-            <input
-              :value="maskedKey"
-              readonly
-              class="flex-1 min-w-[200px] px-3 py-2 text-sm font-mono rounded-btn border border-notion-border dark:border-notion-border-dark bg-gray-50 dark:bg-gray-800/50 text-notion-text dark:text-notion-text-dark select-all"
-            />
-            <button
-              @click="showKey = !showKey"
-              class="px-3 py-2 text-sm font-medium rounded-btn border border-notion-border dark:border-notion-border-dark text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-              :title="showKey ? '隐藏密钥' : '显示密钥'"
-            >
-              <svg v-if="!showKey" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
-              </svg>
-              <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.542-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.542 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/>
-              </svg>
-            </button>
-            <button
-              @click="copyToClipboard(config.external_api_key, '接口密钥')"
-              :disabled="!config.external_api_key"
-              class="px-4 py-2 text-sm font-medium rounded-btn border border-notion-border dark:border-notion-border-dark text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors disabled:opacity-50"
-            >复制密钥</button>
-            <button
-              @click="regenerateApiKey()"
-              class="px-4 py-2 text-sm font-medium rounded-btn border border-red-200 dark:border-red-800/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-            >重新生成</button>
-          </div>
-          <p class="text-xs text-notion-muted dark:text-notion-muted-dark mt-1.5">
-            工具调用时通过 <code class="px-1 rounded bg-gray-100 dark:bg-gray-800">?token=密钥</code> 或请求头
-            <code class="px-1 rounded bg-gray-100 dark:bg-gray-800">X-API-Key: 密钥</code> 携带；
-            下方接入地址与配置示例已自动填入密钥。
-          </p>
-        </div>
-      </div>
-    </div>
+        <div class="console-inner">
+          <!-- 左：调用链路示意 -->
+          <div class="flow-block" :class="{ 'is-muted': !trunkLive }">
+            <p class="side-label">调用链路 · Request Flow</p>
+            <div class="flow">
+              <div class="flow-stage flow-stage--src">
+                <div class="src-node src-node--y" :class="{ 'is-live': yatoriLive }">
+                  <i class="src-dot" aria-hidden="true" />
+                  <span class="src-name">Yatori</span>
+                  <span class="src-state">{{ yatoriLive ? '在听' : (config.external_enabled ? '已停用' : '接口关闭') }}</span>
+                </div>
+                <div class="src-node src-node--o" :class="{ 'is-live': ocsLive }">
+                  <i class="src-dot" aria-hidden="true" />
+                  <span class="src-name">OCS</span>
+                  <span class="src-state">{{ ocsLive ? '在听' : (config.external_enabled ? '已停用' : '接口关闭') }}</span>
+                </div>
+              </div>
 
-    <!-- Global Settings Card -->
-    <div class="card mb-6">
-      <div class="flex items-center gap-3 mb-5">
-        <div class="w-9 h-9 rounded-btn bg-accent-10 border border-accent-20 flex items-center justify-center">
-          <svg class="w-5 h-5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-          </svg>
-        </div>
-        <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">全局设置</h2>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-        <!-- Max concurrent AI -->
-        <div>
-          <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">最大并发 AI 请求数</label>
-          <input
-            type="number"
-            :value="config.max_concurrent_ai"
-            @change="updateNumberConfig('max_concurrent_ai', $event.target.value)"
-            min="1" max="20"
-            class="w-full px-3 py-2 text-sm rounded-btn border border-notion-border dark:border-notion-border-dark bg-notion-bg dark:bg-notion-bg-dark text-notion-text dark:text-notion-text-dark focus:outline-none focus:border-notion-accent dark:focus:border-notion-accent-dark"
-          />
-        </div>
-
-        <!-- AI timeout -->
-        <div>
-          <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">AI 请求超时（秒）</label>
-          <input
-            type="number"
-            :value="config.ai_timeout"
-            @change="updateNumberConfig('ai_timeout', $event.target.value)"
-            min="10" max="300"
-            class="w-full px-3 py-2 text-sm rounded-btn border border-notion-border dark:border-notion-border-dark bg-notion-bg dark:bg-notion-bg-dark text-notion-text dark:text-notion-text-dark focus:outline-none focus:border-notion-accent dark:focus:border-notion-accent-dark"
-          />
-        </div>
-
-        <!-- Auto save toggle -->
-        <div class="flex items-end">
-          <label class="flex items-center gap-3 cursor-pointer select-none">
-            <button
-              @click="updateConfig('auto_save', !config.auto_save)"
-              :class="[
-                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none',
-                config.auto_save ? 'bg-notion-accent dark:bg-notion-accent-dark' : 'bg-gray-300 dark:bg-gray-600'
-              ]"
-            >
-              <span
-                :class="[
-                  'inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200',
-                  config.auto_save ? 'translate-x-6' : 'translate-x-1'
-                ]"
-              />
-            </button>
-            <span class="text-sm text-notion-text dark:text-notion-text-dark">AI 答案自动存入本地题库</span>
-          </label>
-        </div>
-      </div>
-    </div>
-
-    <!-- Yatori Card -->
-    <div class="card mb-6">
-      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
-        <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-btn bg-blue-50 border border-blue-200 dark:bg-blue-900/30 dark:border-blue-800 flex items-center justify-center flex-shrink-0">
-            <svg class="w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5"/>
-            </svg>
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">Yatori 对接</h2>
-            <p class="text-xs text-notion-muted dark:text-notion-muted-dark mt-0.5">yatori-go-console 自动考试答题系统</p>
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
-          <span :class="[
-            'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium',
-            config.yatori_enabled
-              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-              : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
-          ]">
-            <span :class="['w-1.5 h-1.5 rounded-full', config.yatori_enabled ? 'bg-emerald-500' : 'bg-gray-400']"></span>
-            {{ config.yatori_enabled ? '已启用' : '已禁用' }}
-          </span>
-          <button
-            @click="updateConfig('yatori_enabled', !config.yatori_enabled)"
-            :class="[
-              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none',
-              config.yatori_enabled ? 'bg-notion-accent dark:bg-notion-accent-dark' : 'bg-gray-300 dark:bg-gray-600'
-            ]"
-          >
-            <span
-              :class="[
-                'inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200',
-                config.yatori_enabled ? 'translate-x-6' : 'translate-x-1'
-              ]"
-            />
-          </button>
-        </div>
-      </div>
-
-      <div class="space-y-4">
-        <!-- Endpoint URL -->
-        <div>
-          <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">接入地址</label>
-          <div class="flex gap-2">
-            <input
-              :value="yatoriUrl"
-              readonly
-              class="flex-1 px-3 py-2 text-sm font-mono rounded-btn border border-notion-border dark:border-notion-border-dark bg-gray-50 dark:bg-gray-800/50 text-notion-text dark:text-notion-text-dark select-all"
-            />
-            <button
-              @click="copyToClipboard(yatoriUrl, 'Yatori 接入地址')"
-              class="px-4 py-2 text-sm font-medium rounded-btn border border-notion-border dark:border-notion-border-dark text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            >复制</button>
-          </div>
-        </div>
-
-        <!-- Config Example -->
-        <div>
-          <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">config.yml 配置示例</label>
-          <div class="relative">
-            <pre class="px-4 py-3 text-xs font-mono rounded-btn border border-notion-border dark:border-notion-border-dark bg-gray-50 dark:bg-gray-800/50 text-notion-text dark:text-notion-text-dark overflow-x-auto whitespace-pre-wrap select-all">{{ yatoriConfigYaml }}</pre>
-            <button
-              @click="copyToClipboard(yatoriConfigYaml, 'Yatori 配置')"
-              class="absolute top-2 right-2 px-3 py-1 text-xs font-medium rounded-btn border border-notion-border dark:border-notion-border-dark bg-white dark:bg-gray-800 text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            >复制</button>
-          </div>
-        </div>
-
-        <!-- Stats -->
-        <div class="flex flex-wrap gap-2 sm:gap-3 pt-2">
-          <div class="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-btn bg-gray-50 dark:bg-gray-800/50 text-xs sm:text-sm">
-            <span class="text-notion-muted dark:text-notion-muted-dark">今日查询</span>
-            <span class="font-semibold text-notion-text dark:text-notion-text-dark">{{ stats.yatori.total }}</span>
-          </div>
-          <div class="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-btn bg-emerald-50 dark:bg-emerald-900/20 text-xs sm:text-sm">
-            <span class="text-emerald-600 dark:text-emerald-400">本地命中</span>
-            <span class="font-semibold text-emerald-700 dark:text-emerald-300">{{ stats.yatori.local }}</span>
-          </div>
-          <div class="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-btn bg-blue-50 dark:bg-blue-900/20 text-xs sm:text-sm">
-            <span class="text-blue-600 dark:text-blue-400">AI 补充</span>
-            <span class="font-semibold text-blue-700 dark:text-blue-300">{{ stats.yatori.ai }}</span>
-          </div>
-          <div class="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-btn bg-gray-50 dark:bg-gray-800/50 text-xs sm:text-sm">
-            <span class="text-notion-muted dark:text-notion-muted-dark">未找到</span>
-            <span class="font-semibold text-notion-text dark:text-notion-text-dark">{{ stats.yatori.notFound }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- OCS Card -->
-    <div class="card mb-6">
-      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
-        <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-btn bg-amber-50 border border-amber-200 dark:bg-amber-900/30 dark:border-amber-800 flex items-center justify-center flex-shrink-0">
-            <svg class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
-            </svg>
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">OCS 网课助手对接</h2>
-            <p class="text-xs text-notion-muted dark:text-notion-muted-dark mt-0.5">OCS 网课助手在线搜题</p>
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
-          <span :class="[
-            'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium',
-            config.ocs_enabled
-              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-              : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
-          ]">
-            <span :class="['w-1.5 h-1.5 rounded-full', config.ocs_enabled ? 'bg-emerald-500' : 'bg-gray-400']"></span>
-            {{ config.ocs_enabled ? '已启用' : '已禁用' }}
-          </span>
-          <button
-            @click="updateConfig('ocs_enabled', !config.ocs_enabled)"
-            :class="[
-              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none',
-              config.ocs_enabled ? 'bg-notion-accent dark:bg-notion-accent-dark' : 'bg-gray-300 dark:bg-gray-600'
-            ]"
-          >
-            <span
-              :class="[
-                'inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-200',
-                config.ocs_enabled ? 'translate-x-6' : 'translate-x-1'
-              ]"
-            />
-          </button>
-        </div>
-      </div>
-
-      <div class="space-y-4">
-        <!-- Endpoint URL -->
-        <div>
-          <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">接入地址</label>
-          <div class="flex gap-2">
-            <input
-              :value="ocsUrl"
-              readonly
-              class="flex-1 px-3 py-2 text-sm font-mono rounded-btn border border-notion-border dark:border-notion-border-dark bg-gray-50 dark:bg-gray-800/50 text-notion-text dark:text-notion-text-dark select-all"
-            />
-            <button
-              @click="copyToClipboard(ocsUrl, 'OCS 接入地址')"
-              class="px-4 py-2 text-sm font-medium rounded-btn border border-notion-border dark:border-notion-border-dark text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            >复制</button>
-          </div>
-        </div>
-
-        <!-- OCS Config JSON -->
-        <div>
-          <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">OCS 题库配置（在 OCS 脚本中粘贴此 JSON）</label>
-          <div class="relative">
-            <pre class="px-4 py-3 text-xs font-mono rounded-btn border border-notion-border dark:border-notion-border-dark bg-gray-50 dark:bg-gray-800/50 text-notion-text dark:text-notion-text-dark overflow-x-auto whitespace-pre-wrap select-all">{{ ocsConfigJson }}</pre>
-            <button
-              @click="copyToClipboard(ocsConfigJson, 'OCS 题库配置')"
-              class="absolute top-2 right-2 px-3 py-1 text-xs font-medium rounded-btn border border-notion-border dark:border-notion-border-dark bg-white dark:bg-gray-800 text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-            >复制</button>
-          </div>
-        </div>
-
-        <!-- Stats -->
-        <div class="flex flex-wrap gap-2 sm:gap-3 pt-2">
-          <div class="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-btn bg-gray-50 dark:bg-gray-800/50 text-xs sm:text-sm">
-            <span class="text-notion-muted dark:text-notion-muted-dark">今日查询</span>
-            <span class="font-semibold text-notion-text dark:text-notion-text-dark">{{ stats.ocs.total }}</span>
-          </div>
-          <div class="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-btn bg-emerald-50 dark:bg-emerald-900/20 text-xs sm:text-sm">
-            <span class="text-emerald-600 dark:text-emerald-400">本地命中</span>
-            <span class="font-semibold text-emerald-700 dark:text-emerald-300">{{ stats.ocs.local }}</span>
-          </div>
-          <div class="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-btn bg-blue-50 dark:bg-blue-900/20 text-xs sm:text-sm">
-            <span class="text-blue-600 dark:text-blue-400">AI 补充</span>
-            <span class="font-semibold text-blue-700 dark:text-blue-300">{{ stats.ocs.ai }}</span>
-          </div>
-          <div class="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-btn bg-gray-50 dark:bg-gray-800/50 text-xs sm:text-sm">
-            <span class="text-notion-muted dark:text-notion-muted-dark">未找到</span>
-            <span class="font-semibold text-notion-text dark:text-notion-text-dark">{{ stats.ocs.notFound }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Query Logs Card -->
-    <div class="card">
-      <div class="flex flex-col gap-4 mb-5">
-        <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-btn bg-gray-100 border border-gray-200 dark:bg-gray-800 dark:border-gray-700 flex items-center justify-center flex-shrink-0">
-            <svg class="w-5 h-5 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
-            </svg>
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">查询日志</h2>
-            <p class="text-xs text-notion-muted dark:text-notion-muted-dark mt-0.5">最近 50 条查询记录</p>
-          </div>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <!-- Filters -->
-          <select
-            v-model="logFilter.source"
-            @change="loadLogs()"
-            class="px-2 py-1.5 text-xs rounded-btn border border-notion-border dark:border-notion-border-dark bg-notion-bg dark:bg-notion-bg-dark text-notion-text dark:text-notion-text-dark focus:outline-none"
-          >
-            <option value="">全部来源</option>
-            <option value="yatori">Yatori</option>
-            <option value="ocs">OCS</option>
-          </select>
-          <select
-            v-model="logFilter.result"
-            @change="loadLogs()"
-            class="px-2 py-1.5 text-xs rounded-btn border border-notion-border dark:border-notion-border-dark bg-notion-bg dark:bg-notion-bg-dark text-notion-text dark:text-notion-text-dark focus:outline-none"
-          >
-            <option value="">全部结果</option>
-            <option value="local">本地命中</option>
-            <option value="ai">AI 补充</option>
-            <option value="not_found">未找到</option>
-          </select>
-          <button
-            @click="loadLogs()"
-            class="px-2 py-1.5 text-xs font-medium rounded-btn border border-notion-border dark:border-notion-border-dark text-notion-text dark:text-notion-text-dark hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-          >
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-            </svg>
-          </button>
-          <button
-            @click="clearLogs()"
-            class="px-2 py-1.5 text-xs font-medium rounded-btn border border-red-200 dark:border-red-800/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors whitespace-nowrap"
-          >清理30天前</button>
-          <button
-            @click="clearAllLogs()"
-            class="px-2 py-1.5 text-xs font-medium rounded-btn border border-red-200 dark:border-red-800/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-          >清空</button>
-        </div>
-      </div>
-
-      <!-- 桌面（≥1024px）：表格布局 -->
-      <div class="hidden lg:block">
-        <div v-if="logsLoading" class="text-center py-8 text-sm text-notion-muted dark:text-notion-muted-dark">
-          加载中...
-        </div>
-        <div v-else-if="logs.length === 0" class="text-center py-8 text-sm text-notion-muted dark:text-notion-muted-dark">
-          暂无查询记录
-        </div>
-        <div v-else class="max-h-[480px] overflow-y-auto overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead class="sticky top-0 z-10 bg-white dark:bg-gray-800">
-            <tr class="border-b border-notion-border dark:border-notion-border-dark">
-              <th class="text-left py-2 px-2 sm:px-3 font-medium text-notion-muted dark:text-notion-muted-dark text-xs">时间</th>
-              <th class="text-left py-2 px-2 sm:px-3 font-medium text-notion-muted dark:text-notion-muted-dark text-xs">来源</th>
-              <th class="text-left py-2 px-2 sm:px-3 font-medium text-notion-muted dark:text-notion-muted-dark text-xs">题目</th>
-              <th class="text-left py-2 px-3 font-medium text-notion-muted dark:text-notion-muted-dark text-xs">题型</th>
-              <th class="text-left py-2 px-2 sm:px-3 font-medium text-notion-muted dark:text-notion-muted-dark text-xs">结果</th>
-              <th class="text-left py-2 px-2 sm:px-3 font-medium text-notion-muted dark:text-notion-muted-dark text-xs">答案</th>
-              <th class="text-right py-2 px-3 font-medium text-notion-muted dark:text-notion-muted-dark text-xs">耗时</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="log in logs"
-              :key="log.id"
-              class="border-b border-notion-border/50 dark:border-notion-border-dark/50 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors"
-            >
-              <td class="py-2.5 px-2 sm:px-3 text-notion-muted dark:text-notion-muted-dark whitespace-nowrap">
-                <span class="text-xs">{{ formatDate(log.created_at) }}</span>
-                <span class="hidden sm:inline text-xs ml-1 opacity-70">{{ formatTime(log.created_at) }}</span>
-              </td>
-              <td class="py-2.5 px-2 sm:px-3">
-                <span class="text-xs font-medium text-notion-text dark:text-notion-text-dark">{{ sourceLabel[log.source] || log.source }}</span>
-              </td>
-              <td class="py-2.5 px-2 sm:px-3 max-w-[120px] sm:max-w-[200px]">
-                <span class="text-xs sm:text-sm text-notion-text dark:text-notion-text-dark truncate block" :title="log.content">{{ truncate(log.content, 15) }}</span>
-              </td>
-              <td class="py-2.5 px-3 text-notion-muted dark:text-notion-muted-dark text-xs">{{ log.type || '-' }}</td>
-              <td class="py-2.5 px-2 sm:px-3">
-                <span :class="['inline-block px-1.5 sm:px-2 py-0.5 rounded text-xs font-medium', resultColor[log.result]]">
-                  {{ resultLabel[log.result] || log.result }}
+              <div class="flow-rails">
+                <span class="rail" :class="{ 'is-live': yatoriLive }" aria-hidden="true">
+                  <i class="rail-line" />
+                  <i class="flow-carrier" data-delay="0"><b class="packet" /></i>
+                  <i class="flow-carrier" data-delay="1.4" data-slow="1"><b class="packet" /></i>
                 </span>
-              </td>
-              <td class="py-2.5 px-2 sm:px-3 max-w-[100px] sm:max-w-[200px]">
-                <span class="text-xs text-notion-text dark:text-notion-text-dark truncate block" :title="log.answer">{{ truncate(log.answer, 10) || '-' }}</span>
-              </td>
-              <td class="py-2.5 px-3 text-right whitespace-nowrap">
-                <span :class="[
-                  'text-xs',
-                  log.cost_ms < 100 ? 'text-emerald-600 dark:text-emerald-400' :
-                  log.cost_ms < 2000 ? 'text-amber-600 dark:text-amber-400' :
-                  'text-red-600 dark:text-red-400'
-                ]">
-                  {{ log.cost_ms < 1000 ? log.cost_ms + 'ms' : (log.cost_ms / 1000).toFixed(1) + 's' }}
+                <span class="rail" :class="{ 'is-live': ocsLive }" aria-hidden="true">
+                  <i class="rail-line" />
+                  <i class="flow-carrier" data-delay="0.7"><b class="packet" /></i>
+                  <i class="flow-carrier" data-delay="2.1" data-slow="1"><b class="packet" /></i>
                 </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        </div>
-      </div>
+              </div>
 
-      <!-- 移动端与平板（<1024px）：卡片布局 -->
-      <div class="lg:hidden">
-        <div v-if="logsLoading" class="text-center py-8 text-sm text-notion-muted dark:text-notion-muted-dark">
-          加载中...
-        </div>
-        <div v-else-if="logs.length === 0" class="text-center py-8 text-sm text-notion-muted dark:text-notion-muted-dark">
-          暂无查询记录
-        </div>
-        <div v-else class="max-h-[480px] overflow-y-auto space-y-2">
-          <div
-            v-for="log in logs"
-            :key="log.id"
-            class="rounded-card border border-notion-border dark:border-notion-border-dark bg-notion-surface dark:bg-notion-surface-dark p-3"
-          >
-            <div class="flex items-center justify-between gap-2 mb-1.5">
-              <span class="text-xs font-medium text-notion-text dark:text-notion-text-dark">{{ sourceLabel[log.source] || log.source }}</span>
-              <span :class="['inline-block px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0', resultColor[log.result]]">
-                {{ resultLabel[log.result] || log.result }}
+              <div class="flow-gate">
+                <span class="gate-mark" :class="{ 'is-live': trunkLive }" aria-hidden="true">
+                  <svg class="gate-ring" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                </span>
+                <span class="gate-label">密钥校验</span>
+                <span class="gate-sub">X-API-Key · ?token=</span>
+              </div>
+
+              <span class="rail rail--trunk" :class="{ 'is-live': trunkLive }" aria-hidden="true">
+                <i class="rail-line" />
+                <i class="flow-carrier" data-delay="0.3"><b class="packet packet--ok" /></i>
+                <i class="flow-carrier" data-delay="1.7"><b class="packet packet--ai" /></i>
               </span>
+
+              <div class="flow-stage flow-stage--ans">
+                <span class="ans-line">
+                  <i class="adot is-local" aria-hidden="true" />
+                  <span class="ans-name">本地命中</span>
+                  <b class="ans-num" data-stat="ans-local">0</b>
+                </span>
+                <span class="ans-line">
+                  <i class="adot is-ai" aria-hidden="true" />
+                  <span class="ans-name">AI 补充</span>
+                  <b class="ans-num" data-stat="ans-ai">0</b>
+                </span>
+                <span class="ans-line">
+                  <i class="adot is-miss" aria-hidden="true" />
+                  <span class="ans-name">未命中</span>
+                  <b class="ans-num" data-stat="ans-miss">0</b>
+                </span>
+              </div>
             </div>
-            <p class="text-xs text-notion-text dark:text-notion-text-dark mb-1.5" :title="log.content">
-              {{ truncate(log.content, 30) }}
+            <p class="flow-note">
+              <template v-if="trunkLive">
+                关掉下方
+                <button type="button" class="note-link" @click="jumpTo(1)">「01 接口安全」的总开关</button>
+                ，链路里的数据包会停在校验节点——动效就是状态本身。
+              </template>
+              <template v-else>
+                接口已关闭，链路停在密钥校验节点，外部工具会收到「接口已禁用」。
+                <button type="button" class="note-link" @click="jumpTo(1)">去开启</button>
+              </template>
             </p>
-            <div class="flex items-center justify-between gap-2 text-[11px] text-notion-muted dark:text-notion-muted-dark">
-              <span class="truncate">{{ truncate(log.answer, 12) || '-' }}</span>
-              <span class="flex-shrink-0" :class="[
-                log.cost_ms < 100 ? 'text-emerald-600 dark:text-emerald-400' :
-                log.cost_ms < 2000 ? 'text-amber-600 dark:text-amber-400' :
-                'text-red-600 dark:text-red-400'
-              ]">
-                {{ log.cost_ms < 1000 ? log.cost_ms + 'ms' : (log.cost_ms / 1000).toFixed(1) + 's' }}
-              </span>
+          </div>
+
+          <!-- 右：今日流量 -->
+          <aside class="pulse-card">
+            <p class="side-label">今日流量 · Live</p>
+            <div class="pulse-num">
+              <b class="pulse-big" data-stat="total">0</b>
+              <span class="pulse-unit">次调用</span>
+            </div>
+            <div class="pulse-rows">
+              <div class="pulse-row">
+                <span class="pulse-src"><i class="src-dot src-dot--y" aria-hidden="true" />Yatori</span>
+                <span class="pulse-count"><b data-stat="y-total">0</b> 次</span>
+              </div>
+              <div class="bar" aria-hidden="true">
+                <i class="bar-seg bar-seg--local" style="width:0" />
+                <i class="bar-seg bar-seg--ai" style="width:0" />
+                <i class="bar-seg bar-seg--miss" style="width:0" />
+              </div>
+              <div class="pulse-row">
+                <span class="pulse-src"><i class="src-dot src-dot--o" aria-hidden="true" />OCS</span>
+                <span class="pulse-count"><b data-stat="o-total">0</b> 次</span>
+              </div>
+              <div class="bar" aria-hidden="true">
+                <i class="bar-seg bar-seg--local" style="width:0" />
+                <i class="bar-seg bar-seg--ai" style="width:0" />
+                <i class="bar-seg bar-seg--miss" style="width:0" />
+              </div>
+            </div>
+            <div class="side-note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+              <span>条形为本地 / AI / 未命中的构成，每 30 秒自动刷新。</span>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ============ 01 接口安全 ============ -->
+      <section class="section" data-reveal data-nav="1">
+        <SectionHeader index="01" title="接口安全" hint="总开关与调用密钥" />
+        <div class="panel">
+          <div class="panel-body">
+            <div class="switch-row">
+              <div class="switch-text">
+                <p class="switch-title">对外开放接口</p>
+                <p class="switch-hint">关闭后接口立即停止响应，已接入的 Yatori / OCS 会收到「接口已禁用」。未携带密钥的请求同样会被拒绝，因此开启状态下只有持钥工具能查询。</p>
+              </div>
+              <label class="switch" :class="{ 'is-on': config.external_enabled }">
+                <input type="checkbox" class="sr-only" :checked="config.external_enabled" :disabled="saving"
+                  aria-label="对外开放接口"
+                  @change="updateConfig('external_enabled', $event.target.checked)">
+                <span class="switch-track" aria-hidden="true"><i class="switch-thumb" /></span>
+                <span class="switch-label">{{ config.external_enabled ? '已开启' : '已关闭' }}</span>
+              </label>
+            </div>
+
+            <div class="field">
+              <div class="field-top">
+                <label class="field-label" for="ex-key">接口密钥</label>
+                <span class="field-flags" v-if="!config.external_api_key"><i class="dirty-dot" aria-hidden="true" />尚未生成</span>
+              </div>
+              <div class="field-shell" data-key-line>
+                <input id="ex-key" class="field-input is-mono" type="text" :value="maskedKey" readonly>
+                <button class="icon-btn" :aria-label="showKey ? '隐藏密钥' : '显示密钥'" :title="showKey ? '隐藏密钥' : '显示密钥'" @click="showKey = !showKey">
+                  <svg v-if="!showKey" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 3l18 18M10.6 5.1A10.9 10.9 0 0 1 12 5c6.5 0 10 6 10 6a17.2 17.2 0 0 1-3.4 4.1M6.6 6.6C3.9 8.2 2 12 2 12s3.5 6 10 6c1.9 0 3.6-.5 5-1.3"/></svg>
+                </button>
+                <button class="icon-btn" data-copy="密钥" :disabled="!config.external_api_key" aria-label="复制密钥" title="复制密钥" @click="copyToClipboard(config.external_api_key, '密钥')">
+                  <svg v-if="!copied['密钥']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l5 5L20 6"/></svg>
+                </button>
+                <button class="btn-danger-quiet" @click="regenerateApiKey">重新生成</button>
+              </div>
+              <p class="field-hint">调用时在 URL 追加 <code>?token=密钥</code>，或带上请求头 <code>X-API-Key:&nbsp;密钥</code>。下方两个接入地址与配置示例已自动填入当前密钥，重新生成后记得同步到工具。</p>
             </div>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
+      </section>
+
+      <!-- ============ 02 Yatori ============ -->
+      <section class="section" data-reveal data-nav="2">
+        <SectionHeader index="02" title="Yatori 对接" hint="yatori-go-console 答题系统">
+          <template #actions>
+            <label class="switch switch--mini" :class="{ 'is-on': config.yatori_enabled }">
+              <input type="checkbox" class="sr-only" :checked="config.yatori_enabled" :disabled="saving"
+                aria-label="启用 Yatori 对接"
+                @change="updateConfig('yatori_enabled', $event.target.checked)">
+              <span class="switch-track" aria-hidden="true"><i class="switch-thumb" /></span>
+              <span class="switch-label">{{ config.yatori_enabled ? '已启用' : '已停用' }}</span>
+            </label>
+          </template>
+        </SectionHeader>
+        <div class="panel" :class="{ 'is-quiet': !yatoriLive }">
+          <div class="panel-body">
+            <div class="field">
+              <div class="field-top">
+                <label class="field-label">接入地址</label>
+                <span class="path-badge">GET · /api/external/yatori</span>
+              </div>
+              <div class="field-shell">
+                <input class="field-input is-mono" type="text" :value="yatoriUrl" readonly>
+                <button class="icon-btn" data-copy="Yatori 地址" aria-label="复制接入地址" title="复制接入地址" @click="copyToClipboard(yatoriUrl, '地址', 'Yatori 地址')">
+                  <svg v-if="!copied['Yatori 地址']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l5 5L20 6"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="code-block">
+              <div class="code-head">
+                <p class="side-label">config.yml · apiQueSetting</p>
+                <button class="btn-copy" data-copy="YAML" :class="{ 'is-done': copied['YAML'] }" @click="copyToClipboard(yatoriConfigYaml, '配置', 'YAML')">
+                  <svg v-if="!copied['YAML']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l5 5L20 6"/></svg>
+                  <span>{{ copied['YAML'] ? '已复制' : '复制配置' }}</span>
+                </button>
+              </div>
+              <pre class="code-pre">{{ yatoriConfigYaml }}</pre>
+            </div>
+
+            <div class="metrics" data-bar="yatori">
+              <div class="metric">
+                <span class="metric-label">今日查询</span>
+                <b class="metric-num" data-stat="y-total">0</b>
+              </div>
+              <div class="metric is-local">
+                <span class="metric-label">本地命中</span>
+                <b class="metric-num" data-stat="y-local">0</b>
+              </div>
+              <div class="metric is-ai">
+                <span class="metric-label">AI 补充</span>
+                <b class="metric-num" data-stat="y-ai">0</b>
+              </div>
+              <div class="metric is-miss">
+                <span class="metric-label">未找到</span>
+                <b class="metric-num" data-stat="y-miss">0</b>
+              </div>
+              <div class="bar bar--wide" aria-hidden="true">
+                <i class="bar-seg bar-seg--local" style="width:0" />
+                <i class="bar-seg bar-seg--ai" style="width:0" />
+                <i class="bar-seg bar-seg--miss" style="width:0" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 03 OCS ============ -->
+      <section class="section" data-reveal data-nav="3">
+        <SectionHeader index="03" title="OCS 网课助手对接" hint="在线搜题题库源">
+          <template #actions>
+            <label class="switch switch--mini" :class="{ 'is-on': config.ocs_enabled }">
+              <input type="checkbox" class="sr-only" :checked="config.ocs_enabled" :disabled="saving"
+                aria-label="启用 OCS 对接"
+                @change="updateConfig('ocs_enabled', $event.target.checked)">
+              <span class="switch-track" aria-hidden="true"><i class="switch-thumb" /></span>
+              <span class="switch-label">{{ config.ocs_enabled ? '已启用' : '已停用' }}</span>
+            </label>
+          </template>
+        </SectionHeader>
+        <div class="panel" :class="{ 'is-quiet': !ocsLive }">
+          <div class="panel-body">
+            <div class="field">
+              <div class="field-top">
+                <label class="field-label">接入地址</label>
+                <span class="path-badge">GET · /api/external/ocs</span>
+              </div>
+              <div class="field-shell">
+                <input class="field-input is-mono" type="text" :value="ocsUrl" readonly>
+                <button class="icon-btn" data-copy="OCS 地址" aria-label="复制接入地址" title="复制接入地址" @click="copyToClipboard(ocsUrl, '地址', 'OCS 地址')">
+                  <svg v-if="!copied['OCS 地址']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l5 5L20 6"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="code-block">
+              <div class="code-head">
+                <p class="side-label">OCS 题库配置 · JSON</p>
+                <button class="btn-copy" data-copy="JSON" :class="{ 'is-done': copied['JSON'] }" @click="copyToClipboard(ocsConfigJson, '配置', 'JSON')">
+                  <svg v-if="!copied['JSON']" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l5 5L20 6"/></svg>
+                  <span>{{ copied['JSON'] ? '已复制' : '复制配置' }}</span>
+                </button>
+              </div>
+              <pre class="code-pre code-pre--tall">{{ ocsConfigJson }}</pre>
+            </div>
+
+            <div class="metrics" data-bar="ocs">
+              <div class="metric">
+                <span class="metric-label">今日查询</span>
+                <b class="metric-num" data-stat="o-total">0</b>
+              </div>
+              <div class="metric is-local">
+                <span class="metric-label">本地命中</span>
+                <b class="metric-num" data-stat="o-local">0</b>
+              </div>
+              <div class="metric is-ai">
+                <span class="metric-label">AI 补充</span>
+                <b class="metric-num" data-stat="o-ai">0</b>
+              </div>
+              <div class="metric is-miss">
+                <span class="metric-label">未找到</span>
+                <b class="metric-num" data-stat="o-miss">0</b>
+              </div>
+              <div class="bar bar--wide" aria-hidden="true">
+                <i class="bar-seg bar-seg--local" style="width:0" />
+                <i class="bar-seg bar-seg--ai" style="width:0" />
+                <i class="bar-seg bar-seg--miss" style="width:0" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 04 AI 兜底参数 ============ -->
+      <section class="section" data-reveal data-nav="4">
+        <SectionHeader index="04" title="AI 兜底参数" hint="本地未命中时的补答节奏" />
+        <div class="panel">
+          <div class="panel-body">
+            <p class="panel-intro">本地题库没有答案时，系统会把题目交给 AI 补答。以下参数控制补答的节奏与代价。</p>
+            <div class="grid-2">
+              <div class="field">
+                <div class="field-top">
+                  <label class="field-label" for="ex-conc">AI 最大并发</label>
+                  <span class="counter">{{ config.max_concurrent_ai }}<span> 路</span></span>
+                </div>
+                <div class="field-shell">
+                  <input id="ex-conc" class="field-input" type="number" min="1" :value="config.max_concurrent_ai" :disabled="saving"
+                    @change="updateNumberConfig('max_concurrent_ai', $event.target.value, $event.target)">
+                </div>
+                <p class="field-hint">同时向 AI 发起的补答请求上限。调高会更快清空积压，但更容易触发上游限流。</p>
+              </div>
+              <div class="field">
+                <div class="field-top">
+                  <label class="field-label" for="ex-timeout">AI 超时</label>
+                  <span class="counter">{{ config.ai_timeout }}<span> 秒</span></span>
+                </div>
+                <div class="field-shell">
+                  <input id="ex-timeout" class="field-input" type="number" min="1" :value="config.ai_timeout" :disabled="saving"
+                    @change="updateNumberConfig('ai_timeout', $event.target.value, $event.target)">
+                </div>
+                <p class="field-hint">超过这个时间就返回「未找到」，不让调用方一直等。</p>
+              </div>
+            </div>
+            <div class="ai-load">
+              <div class="ai-load-top">
+                <span class="side-label">实时并发 · Semaphore</span>
+                <span class="ai-load-num"><b class="num" data-stat="sem-cur">0</b><span class="slash">/</span>{{ config.max_concurrent_ai }} 路<i v-if="semWaiting" class="ai-queue"><b class="num" data-stat="sem-wait">0</b> 排队中</i></span>
+              </div>
+              <div class="ai-slots" :class="{ 'is-waiting': semWaiting > 0 }" aria-hidden="true">
+                <i v-for="n in slotCount" :key="n" class="ai-slot" :class="{ 'is-busy': n <= semCurrent }" />
+              </div>
+              <p class="ai-load-hint">槽位由后端信号量实时上报：占满后新请求排队，排队超过「AI 超时」即返回未找到。</p>
+            </div>
+            <div class="switch-row">
+              <div class="switch-text">
+                <p class="switch-title">AI 答案自动入库</p>
+                <p class="switch-hint">补答成功的题目自动写入题库，下次同题直接本地命中，不再消耗 AI 额度。</p>
+              </div>
+              <label class="switch" :class="{ 'is-on': config.auto_save }">
+                <input type="checkbox" class="sr-only" :checked="config.auto_save" :disabled="saving"
+                  aria-label="AI 答案自动入库"
+                  @change="updateConfig('auto_save', $event.target.checked)">
+                <span class="switch-track" aria-hidden="true"><i class="switch-thumb" /></span>
+                <span class="switch-label">{{ config.auto_save ? '自动存' : '仅本次' }}</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 05 查询日志 ============ -->
+      <section class="section" data-reveal data-nav="5">
+        <SectionHeader index="05" title="查询日志" hint="最近 50 条外部调用">
+          <template #actions>
+            <div class="log-tools">
+              <div class="seg" role="group" aria-label="按来源筛选">
+                <button class="seg-btn" :class="{ 'is-active': logFilter.source === '' }" @click="logFilter.source = ''; loadLogs()">全部</button>
+                <button class="seg-btn" :class="{ 'is-active': logFilter.source === 'yatori' }" @click="logFilter.source = 'yatori'; loadLogs()">Yatori</button>
+                <button class="seg-btn" :class="{ 'is-active': logFilter.source === 'ocs' }" @click="logFilter.source = 'ocs'; loadLogs()">OCS</button>
+              </div>
+              <div class="seg" role="group" aria-label="按结果筛选">
+                <button class="seg-btn" :class="{ 'is-active': logFilter.result === '' }" @click="logFilter.result = ''; loadLogs()">全部</button>
+                <button class="seg-btn" :class="{ 'is-active': logFilter.result === 'local' }" @click="logFilter.result = 'local'; loadLogs()">本地</button>
+                <button class="seg-btn" :class="{ 'is-active': logFilter.result === 'ai' }" @click="logFilter.result = 'ai'; loadLogs()">AI</button>
+                <button class="seg-btn" :class="{ 'is-active': logFilter.result === 'not_found' }" @click="logFilter.result = 'not_found'; loadLogs()">未找到</button>
+              </div>
+              <button class="icon-btn" :disabled="logsLoading" aria-label="刷新日志" title="刷新日志" @click="loadLogs">
+                <svg class="icon-btn-spin" :class="{ 'is-spinning': logsLoading }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+              </button>
+              <button class="btn-quiet" @click="clearLogs">清理 30 天前</button>
+              <button class="btn-danger-quiet" @click="clearAllLogs">清空</button>
+            </div>
+          </template>
+        </SectionHeader>
+
+        <div class="panel panel--logs">
+          <!-- 桌面端表格 -->
+          <div class="log-table-wrap">
+            <table class="log-table">
+              <thead>
+                <tr>
+                  <th class="col-time">时间</th>
+                  <th class="col-src">来源</th>
+                  <th class="col-q">题目</th>
+                  <th class="col-type">题型</th>
+                  <th class="col-res">结果</th>
+                  <th class="col-ans">答案</th>
+                  <th class="col-cost">耗时</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="logsLoading && !logs.length"><td colspan="7" class="log-state">加载中…</td></tr>
+                <tr v-else-if="!logs.length && !logsLoading"><td colspan="7" class="log-state">还没有查询记录。把接入地址填进工具，第一次调用就会出现在这里。</td></tr>
+                <tr v-for="(log, i) in logs" :key="`${log.created_at}-${i}`" class="log-row">
+                  <td class="col-time mono"><span class="t-day">{{ formatDate(log.created_at) }}</span> {{ formatTime(log.created_at) }}</td>
+                  <td class="col-src"><span class="src-tag" :class="`src-tag--${log.source}`">{{ sourceLabel[log.source] || log.source }}</span></td>
+                  <td class="col-q" :title="log.content">{{ truncate(log.content, 30) }}</td>
+                  <td class="col-type">{{ log.type || '—' }}</td>
+                  <td class="col-res"><span class="res-badge" :class="resultBadge[log.result]">{{ resultLabel[log.result] || log.result }}</span></td>
+                  <td class="col-ans" :title="log.answer">{{ log.answer ? truncate(log.answer, 16) : '—' }}</td>
+                  <td class="col-cost mono" :class="costClass(log.cost_ms)">{{ formatCost(log.cost_ms) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </template>
+  </section>
 </template>
+
+<style scoped>
+.external-page {
+  --ex-accent: var(--theme-accent);
+  --ex-border: var(--theme-border);
+  --ex-text: var(--theme-text);
+  --ex-muted: var(--theme-muted);
+  --ex-surface: var(--theme-surface);
+  --ex-bg: var(--theme-bg);
+  --ex-warn: #b45309;
+  --ex-ok: #15803d;
+  --ex-info: #1d4ed8;
+  --ex-yatori: #2563eb;
+  --ex-ocs: #b45309;
+  --ex-muted-strong: color-mix(in srgb, var(--ex-muted) 62%, var(--ex-text));
+  --ex-accent-text: color-mix(in srgb, var(--ex-accent) 82%, var(--ex-text));
+  --ex-locate-ring: color-mix(in srgb, var(--ex-accent) 30%, transparent);
+  --ex-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --ex-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  color: var(--ex-text);
+}
+.dark .external-page {
+  --ex-warn: #fbbf24;
+  --ex-ok: #4ade80;
+  --ex-info: #93c5fd;
+  --ex-yatori: #60a5fa;
+  --ex-ocs: #fbbf24;
+}
+
+/* ---------- 骨架 / 错误 ---------- */
+.skeleton-wrap { display: flex; flex-direction: column; gap: 26px; }
+.sk-console { height: 260px; border-radius: 18px; }
+.sk-panel { height: 180px; border-radius: var(--ex-radius); }
+.error-block {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 12px;
+  padding: 28px; border: 1px solid var(--ex-border); border-radius: var(--ex-radius);
+  background: var(--ex-surface);
+}
+.error-text { font-size: 13px; color: var(--ex-muted-strong); }
+
+/* ---------- 状态胶囊 ---------- */
+.status-pill {
+  display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px;
+  border: 1px solid var(--ex-border); border-radius: 999px;
+  background: color-mix(in srgb, var(--ex-text) 3%, var(--ex-surface));
+  color: var(--ex-muted); font-size: 11.5px; font-weight: 600; letter-spacing: .01em;
+  transition: color .25s, border-color .25s, background .25s;
+}
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.status-pill.is-live {
+  border-color: color-mix(in srgb, var(--ex-ok) 26%, var(--ex-border));
+  background: color-mix(in srgb, var(--ex-ok) 8%, var(--ex-surface));
+  color: var(--ex-ok);
+}
+.status-pill.is-live .status-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ex-ok) 14%, transparent); }
+.status-pill.is-saving { color: var(--ex-warn); border-color: color-mix(in srgb, var(--ex-warn) 30%, var(--ex-border)); }
+.status-pill.is-saving .status-dot { animation: ex-pulse 1.1s ease-in-out infinite; }
+@keyframes ex-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+/* ---------- 链路 Console ---------- */
+.console {
+  position: relative; isolation: isolate; overflow: hidden;
+  container-type: inline-size;
+  border: 1px solid var(--ex-border); border-radius: 18px;
+  background: var(--ex-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .03), 0 30px 60px -48px color-mix(in srgb, var(--ex-accent) 60%, transparent);
+}
+.dark .console { box-shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 30px 70px -46px rgba(0, 0, 0, .8); }
+.console::after {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ex-accent) 45%, transparent), transparent);
+  opacity: .75;
+}
+.console-orb { position: absolute; border-radius: 50%; filter: blur(52px); pointer-events: none; }
+.console-orb--a {
+  width: 260px; height: 260px; top: -80px; left: -60px;
+  background: color-mix(in srgb, var(--ex-accent) 16%, transparent);
+  animation: ex-orb-a 20s ease-in-out infinite alternate;
+}
+.console-orb--b {
+  width: 210px; height: 210px; right: -50px; bottom: -70px;
+  background: color-mix(in srgb, var(--ex-accent) 8%, transparent);
+  animation: ex-orb-b 26s ease-in-out infinite alternate;
+}
+@keyframes ex-orb-a { to { transform: translate3d(-24px, 18px, 0) scale(1.08); } }
+@keyframes ex-orb-b { to { transform: translate3d(20px, -14px, 0) scale(1.05); } }
+.console-grid {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--ex-text) 13%, transparent) 1px, transparent 0);
+  background-size: 22px 22px; opacity: .42;
+  -webkit-mask-image: radial-gradient(ellipse 80% 100% at 28% 0%, #000 0%, transparent 74%);
+  mask-image: radial-gradient(ellipse 80% 100% at 28% 0%, #000 0%, transparent 74%);
+}
+.console-spot {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .45s;
+  background: radial-gradient(360px circle at var(--mx, 50%) var(--my, 30%), color-mix(in srgb, var(--ex-accent) 10%, transparent), transparent 70%);
+}
+.console:hover .console-spot { opacity: 1; }
+
+.window-bar { display: flex; align-items: center; gap: 10px; padding: 13px 16px 12px; }
+.window-dots { display: inline-flex; gap: 5px; }
+.window-dots i { width: 7px; height: 7px; border-radius: 50%; background: color-mix(in srgb, var(--ex-text) 14%, transparent); }
+.window-dots i:first-child { background: color-mix(in srgb, var(--ex-accent) 55%, transparent); }
+.window-url {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--ex-border) 82%, transparent); border-radius: 999px;
+  background: color-mix(in srgb, var(--ex-text) 3%, transparent);
+  color: var(--ex-muted); font-family: var(--ex-mono); font-size: 10px;
+  max-width: min(420px, 100%); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.window-url svg { width: 10px; height: 10px; opacity: .7; flex: none; }
+.window-tag {
+  flex: none; margin-left: auto; font-family: var(--ex-mono); font-size: 9.5px; letter-spacing: .06em;
+  color: color-mix(in srgb, var(--ex-muted) 80%, var(--ex-text)); white-space: nowrap;
+}
+
+.console-inner {
+  display: grid; gap: 14px; padding: 4px 16px 18px;
+  grid-template-columns: minmax(0, 1fr);
+}
+@container (min-width: 780px) { .console-inner { grid-template-columns: minmax(0, 1fr) 244px; gap: 18px; } }
+
+.side-label {
+  margin: 0 0 10px; font-family: var(--ex-mono); font-size: 9px; font-weight: 600;
+  letter-spacing: .16em; text-transform: uppercase; color: var(--ex-muted);
+}
+.flow-block { transition: opacity .45s ease; }
+.flow-block.is-muted { opacity: .72; }
+
+/* —— 链路图 —— */
+.flow {
+  --flow-node-h: 38px;
+  --flow-axis: x;
+  display: grid; align-items: center; row-gap: 10px;
+  grid-template-columns: auto minmax(26px, 1fr) auto minmax(26px, 1fr) auto;
+  padding: 10px 0 4px;
+}
+.flow-stage--src { display: flex; flex-direction: column; gap: 8px; }
+.src-node {
+  display: grid; grid-template-columns: auto auto; grid-template-rows: auto auto; column-gap: 6px; align-items: center;
+  box-sizing: border-box; height: var(--flow-node-h); align-content: center;
+  padding: 0 10px; border: 1px solid var(--ex-border); border-radius: 10px;
+  background: color-mix(in srgb, var(--ex-text) 2%, var(--ex-surface));
+  transition: border-color .3s, opacity .3s, filter .3s;
+  opacity: .58;
+}
+.src-node.is-live { opacity: 1; }
+.src-node--y { border-color: color-mix(in srgb, var(--ex-yatori) 20%, var(--ex-border)); }
+.src-node--y.is-live { border-color: color-mix(in srgb, var(--ex-yatori) 34%, var(--ex-border)); }
+.src-node--o { border-color: color-mix(in srgb, var(--ex-ocs) 18%, var(--ex-border)); }
+.src-node--o.is-live { border-color: color-mix(in srgb, var(--ex-ocs) 32%, var(--ex-border)); }
+.src-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ex-muted); grid-row: 1 / 3; }
+.src-node--y .src-dot { background: color-mix(in srgb, var(--ex-yatori) 70%, var(--ex-muted)); }
+.src-node--o .src-dot { background: color-mix(in srgb, var(--ex-ocs) 70%, var(--ex-muted)); }
+.src-node.is-live .src-dot { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent); }
+.src-name { font-size: 11px; font-weight: 650; color: var(--ex-text); }
+.src-state { font-family: var(--ex-mono); font-size: 8.5px; letter-spacing: .05em; color: var(--ex-muted); }
+
+.flow-rails { display: grid; grid-template-rows: repeat(2, var(--flow-node-h)); gap: 8px; align-self: center; }
+.rail { position: relative; display: block; height: var(--flow-node-h); overflow: hidden; }
+.rail-line {
+  position: absolute; left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px;
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--ex-muted) 45%, transparent) 0 4px, transparent 4px 10px);
+  background-size: 10px 2px; opacity: .35;
+}
+.rail.is-live .rail-line { opacity: .65; animation: ex-march 1.4s linear infinite; }
+@keyframes ex-march { to { background-position: 10px 0; } }
+@keyframes ex-march-v { to { background-position: 0 10px; } }
+.flow-carrier { position: absolute; left: 0; top: 0; width: 100%; height: 100%; transform: translateX(-100%); opacity: 0; transition: opacity .4s; }
+.rail.is-live .flow-carrier { opacity: 1; }
+.packet {
+  position: absolute; right: 0; top: 50%; margin-top: -3px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ex-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ex-accent) 16%, transparent), 0 0 10px color-mix(in srgb, var(--ex-accent) 60%, transparent);
+}
+.packet--ok { background: var(--ex-ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ex-ok) 14%, transparent), 0 0 10px color-mix(in srgb, var(--ex-ok) 55%, transparent); }
+.packet--ai { background: var(--ex-info); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ex-info) 14%, transparent), 0 0 10px color-mix(in srgb, var(--ex-info) 55%, transparent); }
+
+.flow-gate { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 0 4px; }
+.gate-mark {
+  position: relative; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--ex-border) 80%, var(--ex-accent) 18%);
+  background: color-mix(in srgb, var(--ex-accent) 7%, var(--ex-surface));
+  color: color-mix(in srgb, var(--ex-muted) 55%, var(--ex-text));
+  transition: color .35s, border-color .35s, background .35s, box-shadow .35s;
+}
+.gate-mark svg { width: 17px; height: 17px; }
+.gate-mark.is-live {
+  color: var(--ex-accent-text);
+  border-color: color-mix(in srgb, var(--ex-accent) 32%, var(--ex-border));
+  background: color-mix(in srgb, var(--ex-accent) 11%, var(--ex-surface));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ex-accent) 6%, transparent);
+}
+.gate-ring { position: absolute; inset: -1px; margin: auto; width: 100%; height: 100%; opacity: 0; }
+.gate-label { font-size: 10.5px; font-weight: 650; color: var(--ex-muted-strong); white-space: nowrap; }
+.gate-sub { font-family: var(--ex-mono); font-size: 8.5px; letter-spacing: .04em; color: var(--ex-muted); white-space: nowrap; }
+
+.flow-stage--ans { display: flex; flex-direction: column; gap: 7px; }
+.ans-line { display: flex; align-items: center; gap: 7px; }
+.adot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.adot.is-local { background: var(--ex-ok); }
+.adot.is-ai { background: var(--ex-info); }
+.adot.is-miss { background: color-mix(in srgb, var(--ex-muted) 70%, transparent); }
+.ans-name { font-size: 11px; color: var(--ex-muted-strong); white-space: nowrap; }
+.ans-num { margin-left: auto; font-family: var(--ex-mono); font-size: 11px; font-weight: 650; color: var(--ex-text); font-variant-numeric: tabular-nums; }
+.flow-note { margin: 10px 0 0; font-size: 10.5px; line-height: 1.6; color: var(--ex-muted); }
+
+/* 容器窄于 660px：链路改为「竖脊步进器」——一条贯穿的导流线，节点依次排在右侧，
+   与手机阅读顺序一致。必须写在基础规则之后：同特异性下后者胜出，容器查询不改变层叠顺序。 */
+@container (max-width: 660px) {
+  .flow-block { text-align: left; }
+  .flow {
+    --flow-node-h: 30px;
+    --flow-axis: y;
+    display: block;
+    position: relative;
+    padding: 4px 0 2px 32px;
+  }
+  .flow::before {
+    content: '';
+    position: absolute; left: 10px; top: 12px; bottom: 12px; width: 2px;
+    background-image: linear-gradient(180deg, color-mix(in srgb, var(--ex-text) 16%, transparent) 40%, transparent 40%);
+    background-size: 2px 10px;
+  }
+  .flow-block:not(.is-muted) .flow::before { animation: ex-march-v 1.6s linear infinite; }
+  .flow-rails { display: none; }
+  .rail--trunk { position: absolute; left: 1px; top: 8px; bottom: 8px; width: 20px; height: auto; }
+  .rail--trunk .rail-line { display: none; }
+  .flow-carrier { transform: translateY(-100%); }
+  /* 数据包挂在载体底边，yPercent -100→0 才会从脊线顶端一路走到底 */
+  .packet { left: 50%; right: auto; top: auto; bottom: 0; margin: 0 0 -3px -3px; }
+  .flow-stage--src { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+  .src-node { height: auto; min-height: 36px; padding: 6px 11px; }
+  .src-name { font-size: 11.5px; }
+  .flow-gate { flex-direction: row; align-items: center; gap: 9px; padding: 12px 0; }
+  .gate-mark { width: 34px; height: 34px; flex: none; }
+  .gate-label { font-size: 11px; }
+  .gate-sub { font-size: 8.5px; }
+  .flow-stage--ans { flex-direction: column; gap: 7px; padding: 2px 0 0; }
+  .ans-line { width: 100%; gap: 8px; }
+  .ans-name { font-size: 11.5px; }
+  .ans-num { margin-left: auto; font-size: 11.5px; }
+  .flow-note { font-size: 11.5px; line-height: 1.7; }
+}
+@container (max-width: 560px) {
+  .window-tag { display: none; }
+}
+
+/* —— 右侧流量卡 —— */
+.pulse-card {
+  display: flex; flex-direction: column; padding: 12px 14px 14px;
+  border: 1px solid color-mix(in srgb, var(--ex-border) 78%, transparent); border-radius: 12px;
+  background: color-mix(in srgb, var(--ex-text) 2.5%, var(--ex-surface));
+}
+.pulse-num { display: flex; align-items: baseline; gap: 8px; margin-bottom: 14px; }
+.pulse-big { font-family: var(--ex-mono); font-size: 30px; font-weight: 700; letter-spacing: -.03em; color: var(--ex-accent-text); font-variant-numeric: tabular-nums; }
+.pulse-unit { font-size: 10.5px; color: var(--ex-muted); }
+.pulse-rows { display: flex; flex-direction: column; gap: 6px; }
+.pulse-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pulse-src { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--ex-muted-strong); }
+.src-dot--y { background: var(--ex-yatori); }
+.src-dot--o { background: var(--ex-ocs); }
+.pulse-count { font-size: 10.5px; color: var(--ex-muted); }
+.pulse-count b { font-family: var(--ex-mono); font-size: 11.5px; font-weight: 650; color: var(--ex-text); font-variant-numeric: tabular-nums; }
+
+.bar { display: flex; gap: 2px; height: 5px; margin: 2px 0 8px; border-radius: 3px; background: color-mix(in srgb, var(--ex-text) 6%, transparent); }
+.bar-seg { height: 100%; border-radius: 3px; overflow: hidden; }
+.bar-seg--local { background: color-mix(in srgb, var(--ex-ok) 72%, transparent); }
+.bar-seg--ai { background: color-mix(in srgb, var(--ex-info) 72%, transparent); }
+.bar-seg--miss { background: color-mix(in srgb, var(--ex-muted) 40%, transparent); }
+.bar--wide { height: 6px; margin-top: 14px; }
+
+.side-note { display: flex; gap: 6px; margin-top: auto; padding-top: 10px; font-size: 9.5px; line-height: 1.6; color: var(--ex-muted); }
+.side-note svg { width: 11px; height: 11px; flex: none; margin-top: 1px; opacity: .7; }
+
+/* 窄屏：流量卡改为横排读数条——大号数字在左，两路明细在右，说明占满整行。
+   同样必须位于以上基础规则之后，否则同特异性下基础规则胜出。 */
+@container (max-width: 660px) {
+  .pulse-card { display: grid; grid-template-columns: auto minmax(0, 1fr); align-content: center; gap: 8px 20px; }
+  .pulse-card .side-label { grid-column: 1 / -1; margin-bottom: 0; }
+  .pulse-num { margin: 0; align-self: center; }
+  .pulse-rows { grid-column: 2; min-width: 0; gap: 4px; }
+  .bar { margin: 2px 0 0; }
+  .pulse-card .side-note { grid-column: 1 / -1; margin-top: 6px; padding-top: 10px; }
+}
+
+/* ---------- 区块 ---------- */
+.section { min-width: 0; }
+
+/* ---------- 面板 ---------- */
+.panel {
+  position: relative;
+  border: 1px solid var(--ex-border); border-radius: var(--ex-radius);
+  background: var(--ex-surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .025);
+  transition: border-color .25s, box-shadow .25s, opacity .4s;
+}
+.dark .panel { box-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+.panel:focus-within {
+  border-color: color-mix(in srgb, var(--ex-accent) 34%, var(--ex-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ex-accent) 6%, transparent);
+}
+.panel.is-quiet { opacity: .66; }
+.panel.is-quiet:hover { opacity: 1; }
+.panel-body { display: flex; flex-direction: column; gap: 18px; padding: 18px; }
+@media (min-width: 640px) { .panel-body { padding: 20px 22px; } }
+.panel-intro { margin: 0; font-size: 12px; line-height: 1.65; color: var(--ex-muted-strong); }
+
+/* ---------- 字段 ---------- */
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-top { display: flex; align-items: center; justify-content: space-between; gap: 6px 10px; flex-wrap: wrap; }
+.field-label { font-size: 12px; font-weight: 600; color: var(--ex-muted-strong); }
+.field-flags { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--ex-warn); }
+.dirty-dot { width: 5px; height: 5px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 0 3px rgba(245, 158, 11, .14); }
+.counter {
+  padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--ex-text) 5%, transparent);
+  font-family: var(--ex-mono); font-size: 9.5px; color: var(--ex-muted); font-variant-numeric: tabular-nums;
+}
+.counter span { opacity: .55; }
+.field-shell {
+  display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 8px 0 12px;
+  border: 1px solid var(--ex-border); border-radius: 10px;
+  background: color-mix(in srgb, var(--ex-text) 2.5%, var(--ex-bg));
+  transition: border-color .25s, background .25s;
+}
+.field-shell:focus-within {
+  border-color: color-mix(in srgb, var(--ex-accent) 45%, var(--ex-border));
+  background: var(--ex-surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ex-accent) 7%, transparent);
+}
+.field-input { flex: 1; min-width: 0; height: 40px; border: 0; outline: 0; background: transparent; font-size: 13px; color: var(--ex-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field-input.is-mono { font-family: var(--ex-mono); font-size: 11.5px; }
+.field-input:disabled { opacity: .55; cursor: not-allowed; }
+.field-hint { margin: 0; font-size: 10.5px; line-height: 1.6; color: var(--ex-muted); }
+.field-hint code {
+  padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--ex-accent) 8%, transparent);
+  color: var(--ex-accent-text); font-family: var(--ex-mono); font-size: 10px;
+}
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
+
+.grid-2 { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 720px) { .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---------- 开关行 ---------- */
+.switch-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--ex-border) 76%, transparent); border-radius: 12px;
+  background: color-mix(in srgb, var(--ex-text) 2%, var(--ex-surface));
+}
+.switch-text { min-width: 0; }
+.switch-title { margin: 0 0 3px; font-size: 13px; font-weight: 650; color: var(--ex-text); }
+.switch-hint { margin: 0; font-size: 11px; line-height: 1.6; color: var(--ex-muted); max-width: 62ch; }
+
+/* ---------- 开关 ---------- */
+.switch { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 2px; border-radius: 999px; cursor: pointer; flex: none; }
+.switch-track {
+  position: relative; width: 42px; height: 24px; border-radius: 999px; flex: none;
+  border: 1px solid color-mix(in srgb, var(--ex-text) 8%, transparent);
+  background: color-mix(in srgb, var(--ex-text) 13%, transparent);
+  transition: background .26s, border-color .26s, box-shadow .26s;
+}
+.switch-thumb {
+  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+  transition: transform .3s cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+.switch.is-on .switch-track {
+  background: var(--ex-accent); border-color: transparent;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ex-accent) 12%, transparent);
+}
+.switch.is-on .switch-thumb { transform: translateX(18px); }
+.switch:active .switch-thumb { box-shadow: 0 1px 2px rgba(0, 0, 0, .25), 0 0 0 6px color-mix(in srgb, var(--ex-accent) 8%, transparent); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--ex-accent); outline-offset: 2px; }
+.switch-label { font-size: 10px; font-weight: 600; color: var(--ex-muted); white-space: nowrap; }
+.switch.is-on .switch-label { color: var(--ex-accent-text); }
+.switch--mini .switch-track { width: 36px; height: 20px; }
+.switch--mini .switch-thumb { width: 14px; height: 14px; }
+.switch--mini.is-on .switch-thumb { transform: translateX(16px); }
+
+/* ---------- 代码块 / 徽标 ---------- */
+.code-block { min-width: 0; }
+.code-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 8px;
+}
+.code-head .side-label { margin: 0; }
+.btn-copy {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  padding: 4px 9px; border: 1px solid color-mix(in srgb, var(--ex-border) 82%, transparent); border-radius: 8px;
+  background: color-mix(in srgb, var(--ex-text) 3%, transparent);
+  font-size: 10px; font-weight: 600; color: var(--ex-muted-strong); cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s, transform .15s;
+}
+.btn-copy svg { width: 11px; height: 11px; }
+.btn-copy:hover {
+  color: var(--ex-accent-text); background: color-mix(in srgb, var(--ex-accent) 7%, transparent);
+  border-color: color-mix(in srgb, var(--ex-accent) 35%, var(--ex-border));
+}
+.btn-copy:active { transform: scale(.96); }
+.btn-copy.is-done { color: var(--ex-ok); border-color: color-mix(in srgb, var(--ex-ok) 34%, var(--ex-border)); }
+.code-pre {
+  margin: 0; padding: 12px 14px; overflow: auto; max-height: 220px;
+  border: 1px solid color-mix(in srgb, var(--ex-border) 80%, transparent); border-radius: 10px;
+  background: color-mix(in srgb, var(--ex-text) 3%, var(--ex-bg));
+  font-family: var(--ex-mono); font-size: 11px; line-height: 1.7; color: var(--ex-muted-strong);
+  transition: border-color .25s;
+}
+.code-pre:hover { border-color: color-mix(in srgb, var(--ex-accent) 24%, var(--ex-border)); }
+.code-pre--tall { max-height: 300px; }
+.path-badge {
+  padding: 2px 8px; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--ex-accent) 22%, transparent);
+  background: color-mix(in srgb, var(--ex-accent) 8%, transparent);
+  color: var(--ex-accent-text); font-family: var(--ex-mono); font-size: 9.5px; letter-spacing: .04em;
+}
+
+/* ---------- 指标 ---------- */
+.metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+@media (min-width: 720px) { .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.metric {
+  display: flex; flex-direction: column; gap: 3px; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--ex-border) 72%, transparent); border-radius: 10px;
+  background: color-mix(in srgb, var(--ex-text) 2%, var(--ex-surface));
+  transition: border-color .25s;
+}
+.metric:hover { border-color: color-mix(in srgb, var(--ex-accent) 26%, var(--ex-border)); }
+.metric-label { font-size: 9.5px; letter-spacing: .05em; color: var(--ex-muted); text-transform: uppercase; }
+.metric-num { font-family: var(--ex-mono); font-size: 17px; font-weight: 700; letter-spacing: -.02em; color: var(--ex-text); font-variant-numeric: tabular-nums; }
+.metric.is-local .metric-num { color: var(--ex-ok); }
+.metric.is-ai .metric-num { color: var(--ex-info); }
+.metric.is-miss .metric-num { color: var(--ex-muted-strong); }
+.metrics .bar--wide { grid-column: 1 / -1; margin-top: 4px; }
+
+/* ---------- 按钮 ---------- */
+.icon-btn {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; flex: none;
+  border: 1px solid transparent; border-radius: 8px; color: var(--ex-muted); cursor: pointer; background: transparent;
+  transition: color .2s, background .2s, border-color .2s;
+}
+.icon-btn svg { width: 15px; height: 15px; }
+.icon-btn:hover:not(:disabled) {
+  color: var(--ex-accent-text);
+  background: color-mix(in srgb, var(--ex-accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--ex-accent) 22%, transparent);
+}
+.icon-btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn-quiet {
+  height: 28px; padding: 0 10px; border-radius: 8px; flex: none;
+  border: 1px solid color-mix(in srgb, var(--ex-border) 84%, transparent); background: transparent;
+  font-size: 11px; font-weight: 600; color: var(--ex-muted-strong); cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s;
+}
+.btn-quiet:hover { color: var(--ex-accent-text); border-color: color-mix(in srgb, var(--ex-accent) 34%, var(--ex-border)); }
+.btn-danger-quiet {
+  height: 28px; padding: 0 10px; border-radius: 8px; flex: none;
+  border: 1px solid color-mix(in srgb, #dc2626 22%, transparent); background: transparent;
+  font-size: 11px; font-weight: 600; color: #dc2626; cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s, transform .12s;
+}
+.dark .btn-danger-quiet { color: #f87171; border-color: color-mix(in srgb, #f87171 24%, transparent); }
+.btn-danger-quiet:hover { background: color-mix(in srgb, #dc2626 7%, transparent); border-color: color-mix(in srgb, #dc2626 40%, transparent); }
+.btn-danger-quiet:active, .btn-quiet:active { transform: scale(.97); }
+.btn-quiet:focus-visible, .btn-danger-quiet:focus-visible, .btn-copy:focus-visible, .note-link:focus-visible, .icon-btn:focus-visible {
+  outline: 2px solid var(--ex-accent); outline-offset: 2px;
+}
+
+/* ---------- 日志 ---------- */
+.log-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.seg {
+  display: inline-flex; padding: 2px; border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--ex-border) 80%, transparent);
+  background: color-mix(in srgb, var(--ex-text) 3%, transparent);
+}
+.seg-btn {
+  padding: 4px 10px; border: 0; border-radius: 7px; background: transparent; cursor: pointer;
+  font-size: 10.5px; font-weight: 600; color: var(--ex-muted);
+  transition: color .22s, background .22s, box-shadow .22s;
+}
+.seg-btn:hover { color: var(--ex-accent-text); }
+.seg-btn.is-active {
+  color: var(--ex-accent-text); background: color-mix(in srgb, var(--ex-accent) 10%, var(--ex-surface));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+}
+.seg-btn:focus-visible { outline: 2px solid var(--ex-accent); outline-offset: 1px; }
+.icon-btn-spin.is-spinning { animation: ex-spin .8s linear infinite; }
+@keyframes ex-spin { to { transform: rotate(360deg); } }
+
+.panel--logs { overflow: hidden; }
+.log-table-wrap { max-height: 520px; overflow: auto; }
+.log-table { width: 100%; min-width: 700px; border-collapse: collapse; font-size: 12px; }
+/* 窄屏：收起次要列，表格横向滚动而不是把 7 列压成一团；右侧渐隐提示可滑动 */
+@media (max-width: 640px) {
+  .log-table { min-width: 560px; }
+  .log-table .col-type, .log-table .col-ans { display: none; }
+  .log-table-wrap {
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent 100%);
+    mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 28px), transparent 100%);
+  }
+}
+.log-table thead th {
+  position: sticky; top: 0; z-index: 1; text-align: left; white-space: nowrap;
+  padding: 10px 14px; background: color-mix(in srgb, var(--ex-text) 3.5%, var(--ex-surface));
+  border-bottom: 1px solid var(--ex-border);
+  font-family: var(--ex-mono); font-size: 9.5px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--ex-muted);
+}
+.log-table td { padding: 9px 14px; border-bottom: 1px solid color-mix(in srgb, var(--ex-border) 62%, transparent); vertical-align: middle; color: var(--ex-muted-strong); }
+.log-row { transition: background .18s; }
+.log-row:hover { background: color-mix(in srgb, var(--ex-accent) 4%, transparent); }
+.log-row:last-child td { border-bottom: 0; }
+.mono { font-family: var(--ex-mono); }
+.t-day { color: var(--ex-muted); opacity: .65; font-size: 10px; margin-right: 2px; }
+.col-time { width: 96px; white-space: nowrap; font-size: 11px; }
+.col-src { width: 62px; }
+.col-q { min-width: 160px; max-width: 320px; color: var(--ex-text); }
+.col-type { width: 74px; }
+.col-res { width: 64px; }
+.col-ans { width: 130px; }
+.col-cost { width: 70px; text-align: right; white-space: nowrap; font-size: 11px; }
+.col-cost.is-fast { color: var(--ex-ok); }
+.col-cost.is-slow { color: var(--ex-warn); }
+.col-cost.is-late { color: #dc2626; }
+.dark .col-cost.is-late { color: #f87171; }
+.log-state { padding: 34px 14px !important; text-align: center; font-size: 12px; color: var(--ex-muted); }
+
+.src-tag {
+  display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 6px;
+  font-family: var(--ex-mono); font-size: 9.5px; font-weight: 650; letter-spacing: .03em;
+}
+.src-tag--yatori { background: color-mix(in srgb, var(--ex-yatori) 10%, transparent); color: var(--ex-yatori); }
+.src-tag--ocs { background: color-mix(in srgb, var(--ex-ocs) 12%, transparent); color: var(--ex-ocs); }
+
+.res-badge {
+  display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px;
+  font-size: 10px; font-weight: 650; letter-spacing: .02em; white-space: nowrap;
+}
+.res-badge.is-local { background: color-mix(in srgb, var(--ex-ok) 11%, transparent); color: var(--ex-ok); }
+.res-badge.is-ai { background: color-mix(in srgb, var(--ex-info) 11%, transparent); color: var(--ex-info); }
+.res-badge.is-miss { background: color-mix(in srgb, var(--ex-text) 6%, transparent); color: var(--ex-muted); }
+.res-badge.is-off { background: color-mix(in srgb, var(--ex-warn) 12%, transparent); color: var(--ex-warn); }
+
+/* ---------- AI 实时并发 ---------- */
+.ai-load {
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 12px 13px 13px;
+  border: 1px dashed color-mix(in srgb, var(--ex-border) 90%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--ex-text) 2%, transparent);
+}
+.ai-load .side-label { margin: 0; }
+.ai-load-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.ai-load-num { display: inline-flex; align-items: baseline; gap: 3px; font-family: var(--ex-mono); font-size: 11px; color: var(--ex-muted-strong); }
+.ai-load-num .num { font-size: 15px; font-weight: 700; letter-spacing: -.02em; color: var(--ex-text); font-variant-numeric: tabular-nums; }
+.ai-load-num .slash { opacity: .45; }
+.ai-queue {
+  margin-left: 8px; padding: 1px 6px; border-radius: 999px; font-style: normal;
+  background: color-mix(in srgb, var(--ex-warn) 12%, transparent); color: var(--ex-warn); font-size: 9.5px;
+}
+.ai-queue .num { font-size: 9.5px; font-weight: 650; color: inherit; }
+.ai-slots { display: flex; flex-wrap: wrap; gap: 3px; }
+.ai-slot {
+  width: 10px; height: 22px; border-radius: 3px; transform-origin: bottom center;
+  background: color-mix(in srgb, var(--ex-text) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ex-text) 5%, transparent);
+  transition: background .35s ease, box-shadow .35s ease;
+}
+.ai-slot.is-busy {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ex-accent) 78%, white), var(--ex-accent));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ex-accent) 38%, transparent), 0 5px 12px -5px color-mix(in srgb, var(--ex-accent) 65%, transparent);
+}
+.dark .ai-slot.is-busy { background: linear-gradient(180deg, color-mix(in srgb, var(--ex-accent) 88%, white 12%), color-mix(in srgb, var(--ex-accent) 70%, black)); }
+.ai-slots.is-waiting .ai-slot:not(.is-busy) { animation: ex-slot-wait 1.8s ease-in-out infinite; }
+@keyframes ex-slot-wait { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+.ai-load-hint { margin: 0; font-size: 10.5px; line-height: 1.55; color: var(--ex-muted); }
+
+/* ---------- 章节导航指示器 ---------- */
+.console { scroll-margin-top: 20px; }
+.section { scroll-margin-top: 76px; }
+.ex-nav {
+  position: fixed; right: 6px; top: 50%; transform: translateY(-50%);
+  z-index: 30; display: none; flex-direction: column; align-items: flex-end; gap: 14px;
+}
+.ex-nav-item {
+  position: relative; display: flex; align-items: center; justify-content: flex-end;
+  width: 24px; height: 16px; padding: 0; border: 0; background: none; cursor: pointer;
+  animation: ex-nav-in .5s cubic-bezier(.22, 1, .36, 1) backwards;
+  animation-delay: calc(160ms + var(--i, 0) * 45ms);
+}
+@keyframes ex-nav-in { from { opacity: 0; transform: translateX(9px); } }
+.ex-nav-bar {
+  display: block; width: 9px; height: 2px; border-radius: 2px;
+  background: color-mix(in srgb, var(--ex-text) 15%, transparent);
+  transition: width .42s cubic-bezier(.22, 1, .36, 1), background .3s, box-shadow .3s;
+}
+.ex-nav-item:hover .ex-nav-bar { width: 16px; background: color-mix(in srgb, var(--ex-text) 34%, transparent); }
+.ex-nav-item.is-active .ex-nav-bar {
+  width: 24px; background: var(--ex-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ex-accent) 11%, transparent);
+}
+.ex-nav-tip {
+  position: absolute; right: calc(100% + 4px); top: 50%;
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  padding: 4px 9px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--ex-border) 88%, transparent);
+  background: color-mix(in srgb, var(--ex-surface) 94%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 10px 24px -18px rgba(0, 0, 0, .5);
+  font-size: 10.5px; font-weight: 600; color: var(--ex-muted-strong);
+  opacity: 0; pointer-events: none; transform: translate(7px, -50%);
+  transition: opacity .3s ease, transform .3s cubic-bezier(.22, 1, .36, 1);
+  transition-delay: calc(var(--i, 0) * 28ms);
+}
+.ex-nav-tip i {
+  font-family: var(--ex-mono); font-style: normal; font-size: 8.5px;
+  letter-spacing: .1em; color: var(--ex-muted);
+}
+.ex-nav:hover .ex-nav-tip, .ex-nav:focus-within .ex-nav-tip { opacity: 1; transform: translate(0, -50%); }
+.ex-nav-item.is-active .ex-nav-tip {
+  color: var(--ex-accent-text);
+  border-color: color-mix(in srgb, var(--ex-accent) 26%, var(--ex-border));
+}
+.ex-nav-item.is-active .ex-nav-tip i { color: var(--ex-accent-text); }
+.ex-nav-item:focus-visible { outline: 2px solid var(--ex-accent); outline-offset: 3px; border-radius: 6px; }
+@media (min-width: 1024px) {
+  .ex-nav { display: flex; }
+  .section { scroll-margin-top: 22px; }
+}
+
+.note-link {
+  padding: 0 1px; border: 0; background: none; cursor: pointer; font: inherit;
+  color: var(--ex-accent-text);
+  border-bottom: 1px dashed color-mix(in srgb, var(--ex-accent) 42%, transparent);
+  transition: background .2s, border-color .2s;
+}
+.note-link:hover {
+  background: color-mix(in srgb, var(--ex-accent) 9%, transparent);
+  border-bottom-color: var(--ex-accent);
+}
+
+.is-located { animation: ex-located 1s cubic-bezier(.22, 1, .36, 1); }
+@keyframes ex-located {
+  0% { box-shadow: 0 0 0 0 var(--ex-locate-ring); }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* ---------- 动效降级 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .console-orb, .rail.is-live .rail-line, .icon-btn-spin.is-spinning, .status-pill.is-saving .status-dot { animation: none; }
+  .flow::before { animation: none; }
+  .ai-slots.is-waiting .ai-slot:not(.is-busy) { animation: none; }
+  .flow-carrier { transition: none; }
+  .ex-nav-bar, .ex-nav-tip { transition: none; }
+  .ex-nav-item { animation: none; }
+  .is-located { animation: none; }
+}
+</style>
+
