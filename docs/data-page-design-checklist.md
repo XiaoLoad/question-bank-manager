@@ -6,7 +6,6 @@
 - 技术栈：Vue 3.5.13 + Tailwind 3.4.17 + GSAP 3.12.5 + Vite 6.3.2（`frontend/package.json`）
 - 构建校验命令：`cd frontend && npm run build`（= `vite build`，`package.json:8`）
 
-
 ## 1. 标题头契约（PageHeader）
 
 ### 1.1 组件契约
@@ -33,7 +32,7 @@
 | 仪表盘 | `Dashboard.vue:427-431` | 数据总览 | OVERVIEW | 仪表盘 | 题库规模、增长趋势与用户活跃度的即时切面。 | 有 `:433-448`（刷新按钮） |
 | 题目管理 | `Questions.vue:395-401` | 题库维护 | QUESTIONS | 题目管理 | 动态 `共 {{ total }} 道题目，按分类与题型快速检索、批量维护与 AI 校验。` | 有 `:402-405`（仅管理员：新增题目） |
 | 分类管理 | `Categories.vue:220-226` | 知识结构 | TAXONOMY | 分类管理 | 管理题目的分类标签，让每一道题各归其位。 | 无（自闭合标签） |
-| 题库练习 | `Quiz.vue:577-583` | 练习模式 | PRACTICE | 题库练习 | 选择分类，开始练习。 | 无 |
+| 题库练习 | `Quiz.vue:575-581` | 练习模式 | PRACTICE | 题库练习 | 选择分类，开始练习。 | 无 |
 | 回收站 | `Trash.vue:228-234` | 删除暂存 | TRASH | 回收站 | 动态 `共 {{ total }} 道已删除题目，可恢复或彻底清除。` | 有 `:235-240`（total>0：清空回收站） |
 | **数据管理** | `DataManagement.vue:453-458`（HEAD 基线） | 数据资产 | DATA OPERATIONS | 数据管理 | 数据库切换、备份与导入导出；批量操作前请先确认影响范围。 | 无 |
 | 用户管理 | `UserManagement.vue:3-8` | 访问控制 | ACCESS | 用户管理 | 管理账号、角色与访问权限，保持团队入口清晰可控。 | 有 `:9-11`（添加用户） |
@@ -43,7 +42,7 @@
 | 网站设置 | `SiteSettings.vue:513-518` | 站点配置 | SITE IDENTITY | 网站设置 | 定义访客看到的第一印象；改动先暂存，确认后发布。 | 有 `:519-535`（草稿胶囊 + 保存并发布） |
 | 关于 | `About.vue:169-174` | 项目档案 | THE PROJECT | 关于 | 认识这个项目，以及把它一点点搭起来的人。 | 有 `:175-182`（release-pill 版本徽章） |
 
-侧边栏名称对齐：`Sidebar.vue:44` 题目管理、`:49` 分类管理、`:59` 回收站、`:64` **数据管理**、`:70` 仪表盘、`:75` 网站设置、`:80` AI 设置、`:85` 用户管理、`:90` 题库对接、`:95` 关于；`/quiz`、`/activity` 不在导航项中。
+侧边栏名称对齐（navTree 内 `name` 字段，`Sidebar.vue:44` 起，按声明顺序）：`:45` 仪表盘、`:49` 题目管理、`:50` 分类管理、`:51` 回收站、`:64` **数据管理**、`:65` 题库对接、`:71` 用户管理、`:72` 网站设置、`:73` AI 设置、`:74` 关于；`:57` 题库练习在「学习中心」分组内但 `/quiz` 不在主导航展开项，`/activity` 不在导航项中。
 
 ### 1.3 命名规律（归纳）
 
@@ -51,7 +50,7 @@
 - **eyebrow-en（英文等宽小标）**：以 kebab 属性 `eyebrow-en` 传入；值全大写 ASCII、**1–2 个单词**、不加前缀/标点、全站唯一（OVERVIEW/QUESTIONS/TAXONOMY/PRACTICE/TRASH/DATA OPERATIONS/ACCESS/ACTIVITY/INTEGRATIONS/INTELLIGENCE/SITE IDENTITY/THE PROJECT）。注意它**不是** title 的直译（`数据管理`→DATA OPERATIONS、`题库对接`→INTEGRATIONS、`分类管理`→TAXONOMY），而是"这页管辖什么"的领域词。大小写不必在模板里手打全大写也可（`.ds-eyebrow` 已 `text-transform: uppercase`，`PageHeader.vue:61`），但**现存 12 页全部写成字面全大写**，因此按字面全大写算合规，混写算不一致。
 - **title**：与 `Sidebar.vue` 的 `item.name` 逐字相同（`Dashboard.vue:430` = `Sidebar.vue:70` 仪表盘，依此类推）。`UserActivityLog.vue:6` 是唯一用 `:title` 计算属性的例外。
 - **description**：一句中文、以句号 `。` 结尾、长度约 9–48 字、句式为「这页管什么 + 操作提醒/价值」，常用分号或对偶连接两个动作（`管理账号、角色与访问权限，保持团队入口清晰可控。`）。计数类页面用插值模板串（`Questions.vue:400`、`Trash.vue:233`），角色相关文案用条件串（`AiSettings.vue:446`）。
-- **属性书写顺序**：`class`（可选）→ `eyebrow` → `eyebrow-en` → `title` → `description`；自闭合写法 `class="flex-shrink-0"` 出现在 `Categories.vue:220`、`Questions.vue:395`、`Trash.vue:228`、`Quiz.vue:577`、`DataManagement.vue:453`（HEAD）——旗舰页（ExternalBanks/SiteSettings/AiSettings）不带该 class。
+- **属性书写顺序**：`class`（可选）→ `eyebrow` → `eyebrow-en` → `title` → `description`；自闭合写法 `class="flex-shrink-0"` 出现在 `Categories.vue:220`、`Questions.vue:395`、`Trash.vue:228`、`Quiz.vue:575`、`DataManagement.vue:453`（HEAD）——旗舰页（ExternalBanks/SiteSettings/AiSettings）不带该 class。
 - **actions 语义**：仅放「本页的主张动作」或「本页的状态胶囊」，批量/次要动作下沉到 `SectionHeader #actions`。旗舰页的胶囊形态是 `<span class="status-pill" :class="{...}" role="status" aria-live="polite"><i class="status-dot" aria-hidden="true"></i>文案</span>`（`ExternalBanks.vue:597-601`、`SiteSettings.vue:520-523`）——注意 `aria-live="polite"` 是旗舰页共同写法，两页都有。
 
 ### 1.4 数据管理页应填什么才算一致
@@ -104,14 +103,14 @@
 | `.badge` | `:70-72` | `inline-flex items-center px-2 py-0.5 rounded-badge(6px) text-xs font-medium` |
 | `.badge-type` | `:73-76` | background `color-mix(in srgb, var(--theme-accent) 10%, transparent)` + color accent |
 | `.badge-category` | `:77-79` | `bg-notion-surface text-notion-muted` |
-| `.bg-accent/-10/-15`、`.text-accent`、`.border-accent/-20` | `:82-100` | 主题色工具类，全部走 `var(--theme-accent)` / `color-mix` |
-| `.skeleton` / `.skeleton-enhanced` | `:205-230` | 渐变 `color-mix(text 5%→10%→5%)` 90deg、background-size 200% 100%、`animation shimmer 1.6s infinite ease-in-out`（`:196-199` 位移 -200%→200%）；`::after` 白色 .4 高光 |
-| `.skeleton-stat` | `:236-256` | padding 1rem；label 10px×56px r2；value 28px×64px r8 mt 8px；hint mt 6px ⇒ 统计位骨架的标准形态 |
-| 过渡类 | `:134-149` / `:152-156` / `:159-163` / `:178-193` / `:297-322` | `.page-enter/leave`（0.35s cubic-bezier(0.22,1,0.36,1) / 0.2s cubic-bezier(0.4,0,0.2,1)，enter-from translateY(16px)）；`.collapse-*`（0.3s ease-out / 0.2s ease-in，max-height 500px）；`.fade-in-up`；`.list-enter`；`.modal-overlay-*`（.3s/.2s）与 `.modal-content-*`（.35s scale(.95) translateY(10px) → .2s scale(.98) translateY(-5px)） |
-| `.ds-rise` | `:373-376` | `@keyframes ds-rise` opacity 0→1 + translateY(14px)→0（`:362-371`）；动画 **0.62s cubic-bezier(0.22,1,0.36,1) backwards**，延迟 `var(--d, 0ms)` |
-| `[data-reveal]` | `:378-389` | 初始 opacity 0 / translateY(16px)；过渡 opacity+transform **0.7s cubic-bezier(0.22,1,0.36,1)**；`.is-revealed` 归位 |
-| 全局降级 | `:325-357` | `@media (prefers-reduced-motion: reduce)` 对 `*, *::before, *::after` 施加 animation-duration/iteration-count/transition-duration `0.01ms !important` + scroll-behavior auto；`:391-403` 另给 `.ds-rise` / `[data-reveal]` 显式静态态 |
-| 其他 | `:103-131` | `mark.search-highlight` 黄色 .4/.25；滚动条 6px；`.json-viewer` 硬编码 #7c3aed/#059669/#d97706/#dc2626（+暗色组）；`.markdown-body` `a` 硬编码 #5645d4/#7c6ef0（`:405-506`）⇒ 基础设施自身有硬编码处，**不可当作"允许硬编码"的先例** |
+| `.bg-accent/-10`、`.text-accent`、`.border-accent-20` | `:82-94` | 主题色工具类，全部走 `var(--theme-accent)` / `color-mix`（15% 档与无后缀 `.border-accent` 已删：无一处引用，边框一律用 `-20`） |
+| `.skeleton` / `.skeleton-enhanced` | `:169-194` | 渐变 `color-mix(text 5%→10%→5%)` 90deg、background-size 200% 100%、`animation shimmer 1.6s infinite ease-in-out`（`:160-163` 位移 -200%→200%）；`::after` 白色 .4 高光 |
+| `.skeleton-stat` | `:200-220` | padding 1rem；label 10px×56px r2；value 28px×64px r8 mt 8px；hint mt 6px ⇒ 统计位骨架的标准形态 |
+| 过渡类 | `:128-143` / `:146-150` / `:153-157` / `:223-248` | `.page-enter/leave`（0.35s cubic-bezier(0.22,1,0.36,1) / 0.2s cubic-bezier(0.4,0,0.2,1)，enter-from translateY(16px)）；`.collapse-*`（0.3s ease-out / 0.2s ease-in，max-height 500px）；`.animate-fade-in-up`（0.3s，仅 `AnnouncementBanner.vue:115` 在用）；`.modal-overlay-*`（.3s/.2s）与 `.modal-content-*`（.35s scale(.95) translateY(10px) → .2s scale(.98) translateY(-5px)） |
+| `.ds-rise` | `:297-300` | `@keyframes ds-rise` opacity 0→1 + translateY(14px)→0（`:286-295`）；动画 **0.62s cubic-bezier(0.22,1,0.36,1) backwards**，延迟 `var(--d, 0ms)` |
+| `[data-reveal]` | `:302-313` | 初始 opacity 0 / translateY(16px)；过渡 opacity+transform **0.7s cubic-bezier(0.22,1,0.36,1)**；`.is-revealed` 归位 |
+| 全局降级 | `:251-281` | `@media (prefers-reduced-motion: reduce)` 对 `*, *::before, *::after` 施加 animation-duration/iteration-count/transition-duration `0.01ms !important` + scroll-behavior auto；`:315-327` 另给 `.ds-rise` / `[data-reveal]` 显式静态态 |
+| 其他 | `:97-125` | `mark.search-highlight` 黄色 .4/.25；滚动条 6px；`.json-viewer` 硬编码 #7c3aed/#059669/#d97706/#dc2626（+暗色组）；`.markdown-body` `a` 硬编码 #5645d4/#7c6ef0（`:329-430`）⇒ 基础设施自身有硬编码处，**不可当作“允许硬编码”的先例 |
 
 Tailwind 侧（`frontend/tailwind.config.js`）：`darkMode: 'class'`（`:7`）；`colors.notion` 把 `bg/surface/text/border/accent/muted` **与其 `-dark` 后缀全部映射到同一个 `var(--theme-*)`**（`:11-24`）⇒ `dark:bg-notion-surface-dark` 与 `bg-notion-surface` 是同一个值，写 `dark:notion-*-dark` 是**空转噪声**（`AiSettings.vue` 105 处、`Dashboard.vue` 105 处、`Questions.vue` 44 处，属存量债务，新页禁止新增）；`borderRadius` btn 8px / card 12px / badge 6px（`:26-30`）；`fontFamily.inter`（`:31-33`）。
 
@@ -129,4 +128,31 @@ Tailwind 侧（`frontend/tailwind.config.js`）：`darkMode: 'class'`（`:7`）�
 
 ---
 
-## 3. 共享 UI 组件契约,,### 3.1 `components/SectionNav.vue`（章节导航，340 行）,,- props：`sections`（`[{ nav, index, label }]`，required）、`container`（`[data-nav]` 锚点的查询作用域，模板 ref / ref 对象 / 组件实例三者都接受，`null` 时测量安全退化，`:9-19`）、`ariaLabel`（默认 `章节导航`）、`bandRatio`（默认 `0.36`，判定当前章节的视口带高 = `window.innerHeight * bandRatio`）、`locateSelector`（默认 `.panel`，落点脉冲目标，查不到则脉冲锚点本身）、`chips`（默认 `false`，是否渲染 <1024px 横向胶囊）。,- 事件与暴露：`emit('jump', idx)`；`defineExpose({ jumpTo })`（`:105`），页面内的跳转按钮走 `navRef.value?.jumpTo(idx)`（见 `ExternalBanks.vue:522-525`）。,- 自持状态与清理：`measureNav` / `trackSections`（90ms 节流 + rAF）/ `jumpTo`（reduced-motion 下 `behavior:'auto'`）/ 活动胶囊 `scrollIntoView({block:'nearest',inline:'nearest'})`；scroll（`passive` + `capture:true`）与 resize 监听在 `onBeforeUnmount` 全部撤销，含 `cancelAnimationFrame` 与 `clearTimeout`。,- token：`.sn`（`:147-164`）内的 16 个 `--sn-*` 只从全局 `var(--theme-*)` 经 `color-mix` 派生，**不读页面局部 `--ex-*` / `--dm-*`**，因此同一份标记在任意宿主页面、6 套主题与亮暗下自动跟随；暗色仅在 `.dark .sn-nav` / `.dark .sn-chips` 重混 alpha。,- 根节点 `display: contents`：固定导轨与文档流内的胶囊各自保持原有的流身份，宿主页面可用 `margin-top` 等继续控制胶囊位置。,- 用法：`ExternalBanks.vue:585`（`locate-selector=".panel"`）、`DataManagement.vue:829`（`locate-selector=".dm-console" chips`）。两页锚点为 `data-nav="0..n"`；页面各自持有 `scroll-margin-top`。,,### 3.2 `components/SearchableSelect.vue`（可搜索下拉，269 行）,,- props / emits 契约保持稳定：`modelValue`、`options`、`placeholder`（默认 `请选择`）、`allLabel`、`labelField`（默认 `label`）、`valueField`（默认 `value`）、`disabled`；仅 `emit('update:modelValue')`。当前 8 个调用点：`ImportCategoryDialog.vue:99`、`Categories.vue:411`、`DataManagement.vue`（条件导出、批量删除）、`Questions.vue` ×2、`Quiz.vue:660`、`Trash.vue:284`。,- 祖先滚动保护：`clippedAncestors()` + `withoutAncestorScroll()`（`:84-`）在展开、`focus()` 与面板卸载前后记录并复位可滚动祖先的 `scrollTop/scrollLeft`，避免被裁剪祖先跟着滚动导致卡片位移。,- 面板几何：`flipUp` 依据视口上下可用高度决定向上或向下展开，缩放动画的 `transform-origin` 随之切换（`.bottom-full.ss-pop`）；弹层局部 token `--ss-pop-*`（`:209-`）同样只从 `--theme-*` 派生，暗色只调混合强度。,,### 3.3 页内 z-index 阶梯（新增层级前先对齐）,,| 层 | 值 | 位置 |,|---|---|---|,| 面板正文 | 1 | `DataManagement.vue:1434` `.dm-console > :not(.dm-console-fx)` |,| 面板装饰层 / 光斑 | 0 | `:1448` `.dm-console-fx`、`:1458` `.dm-console::after` |,| 聚焦面板（弹出浮层） | 30 | `:1440` `.dm-console:focus-within` |,| 章节导航导轨 | 40 | `SectionNav.vue` `.sn-nav`（高于聚焦面板，低于页面模态） |,| 投递角标 | 2 | `DataManagement.vue:2215` `.dm-drop-corner` |,| 页面模态（上传命名） | 90 | `DataManagement.vue:2472` `.dm-modal` |,| 全局对话框/Toast | 9994–9999 | `ImportResultDialog.vue:72`、`ToastContainer.vue:69` 等 |
+## 3. 共享 UI 组件契约
+
+### 3.1 `components/SectionNav.vue`（章节导航，340 行）
+
+- props：`sections`（`[{ nav, index, label }]`，required）、`container`（`[data-nav]` 锚点的查询作用域，模板 ref / ref 对象 / 组件实例三者都接受，`null` 时测量安全退化）、`ariaLabel`（默认 `章节导航`）、`bandRatio`（默认 `0.36`，判定当前章节的视口带高 = `window.innerHeight * bandRatio`，`:13-14` / `:43`）、`locateSelector`（默认 `.panel`，落点脉冲目标，查不到则脉冲锚点本身）、`chips`（默认 `false`，是否渲染 <1024px 横向胶囊）。
+- 事件与暴露：`emit('jump', idx)`；`defineExpose({ jumpTo })`（`:105`），页面内的跳转按钮走 `navRef.value?.jumpTo(idx)`（见 `ExternalBanks.vue:525`）。
+- 自持状态与清理：`measureNav` / `trackSections`（90ms 节流 + rAF）/ `jumpTo`（`:66`，reduced-motion 下 `behavior:'auto'`）/ 活动胶囊 `scrollIntoView({block:'nearest',inline:'nearest'})`；scroll（`passive` + `capture:true`）与 resize 监听在 `onBeforeUnmount` 全部撤销，含 `cancelAnimationFrame` 与 `clearTimeout`。
+- token：`.sn`（`:147-`）内的 16 个 `--sn-*` 只从全局 `var(--theme-*)` 经 `color-mix` 派生，**不读页面局部 `--ex-*` / `--dm-*`**，因此同一份标记在任意宿主页面、6 套主题与亮暗下自动跟随；暗色仅在 `.dark .sn-nav` / `.dark .sn-chips` 重混 alpha。`--sn-mono`（`:160`）为 `ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace`。
+- 根节点 `display: contents`：固定导轨与文档流内的胶囊各自保持原有的流身份，宿主页面可用 `margin-top` 等继续控制胶囊位置。
+- 用法：`ExternalBanks.vue:585`（`locate-selector=".panel"`）、`DataManagement.vue:829`（`locate-selector=".dm-console"` + `chips`）。两页锚点为 `data-nav="0..n"`；页面各自持有 `scroll-margin-top`。
+
+### 3.2 `components/SearchableSelect.vue`（可搜索下拉，269 行）
+
+- props / emits 契约保持稳定：`modelValue`、`options`、`placeholder`（默认 `请选择`）、`allLabel`、`labelField`（默认 `label`）、`valueField`（默认 `value`）、`disabled`（`:4-12`）；仅 `emit('update:modelValue')`（`:14`）。当前 8 个调用点：`ImportCategoryDialog.vue:99`、`Categories.vue:411`、`DataManagement.vue`（条件导出、批量删除）、`Questions.vue` ×2、`Quiz.vue:658`、`Trash.vue:284`。
+- 祖先滚动保护：`clippedAncestors()`（`:85`）+ `withoutAncestorScroll()`（`:95`）在展开、`focus()` 与面板卸载前后记录并复位被裁剪祖先的 `scrollTop/scrollLeft`，搜索框用 `focus({ preventScroll: true })`（`:111`），避免被裁剪祖先跟着滚动导致卡片位移。
+- 面板几何：`flipUp`（`:21` / `:72` / `:80`）依据视口上下可用高度决定向上或向下展开，缩放动画的 `transform-origin` 随之切换（`.bottom-full.ss-pop`）；弹层局部 token `--ss-pop-*` 同样只从 `--theme-*` 派生，暗色只调混合强度。
+
+### 3.3 页内 z-index 阶梯（新增层级前先对齐）
+
+| 层 | 值 | 位置 |
+|---|---|---|
+| 面板装饰层 / 光斑 | 0 | `DataManagement.vue:1448` `.dm-console-fx`、`:1458` `.dm-console::after` |
+| 面板正文 | 1 | `DataManagement.vue:1434` `.dm-console > :not(.dm-console-fx)` |
+| 投递角标 | 2 | `DataManagement.vue:2215` `.dm-drop-corner` |
+| 聚焦面板（弹出浮层） | 30 | `DataManagement.vue:1440` `.dm-console:focus-within` |
+| 章节导航导轨 | 40 | `SectionNav.vue:172` `.sn-nav`（高于聚焦面板，低于页面模态） |
+| 页面模态（上传命名） | 90 | `DataManagement.vue:2472` `.dm-modal` |
+| 全局对话框/Toast | 9994–9999 | `ImportResultDialog.vue:72`、`ToastContainer.vue:69` 等 |

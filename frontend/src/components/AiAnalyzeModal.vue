@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import gsap from 'gsap'
 import { useAiTaskStore } from '@/stores/aiTask'
 import { aiCollapseMotion, prefersReducedMotion } from '@/utils/motionTokens'
@@ -382,13 +382,6 @@ const handleClose = async () => {
   }
 
   emit('close')
-}
-
-// 格式化选项
-const formatOptions = (options) => {
-  if (!options) return []
-  if (Array.isArray(options)) return options
-  try { return JSON.parse(options) } catch { return [options] }
 }
 
 // 重新生成

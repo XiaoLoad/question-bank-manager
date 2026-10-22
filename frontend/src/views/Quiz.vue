@@ -1,7 +1,6 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useApi } from "@/composables/useApi";
-import { useAuthStore } from "@/stores/auth";
 import { useQuizStore } from "@/stores/quiz";
 import { useToastStore } from "@/stores/toast";
 import { QUESTION_TYPES } from "@/composables/constants";
@@ -12,7 +11,6 @@ import PageHeader from "@/components/PageHeader.vue";
 defineOptions({ name: "Quiz" });
 
 const api = useApi();
-const authStore = useAuthStore();
 const quizStore = useQuizStore();
 const toast = useToastStore();
 

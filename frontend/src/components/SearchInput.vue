@@ -1,5 +1,5 @@
 <script setup>
-const props = defineProps({
+defineProps({
   modelValue: { type: String, default: '' },
   placeholder: { type: String, default: '搜索题目内容...' },
 })

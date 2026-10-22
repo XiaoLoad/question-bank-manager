@@ -8,7 +8,7 @@ import { useApi } from '@/composables/useApi'
 import { useTrashStore } from '@/stores/trash'
 import { getAllThemes } from '@/themes'
 
-const props = defineProps({
+defineProps({
   open: Boolean,
   // 平板档：仅显示图标条
   collapsed: Boolean,
@@ -126,10 +126,6 @@ function setPanelRef(name, el) {
 function setChevronRef(name, el) {
   if (el) chevrons[name] = el
   else delete chevrons[name]
-}
-
-function isExpanded(name) {
-  return expanded.value.has(name)
 }
 
 // 展开动画：高度撑开 + 子项错峰淡入上移
