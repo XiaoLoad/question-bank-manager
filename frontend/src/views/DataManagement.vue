@@ -10,6 +10,10 @@ import ImportResultDialog from '@/components/ImportResultDialog.vue'
 import ImportCategoryDialog from '@/components/ImportCategoryDialog.vue'
 import SearchableSelect from '@/components/SearchableSelect.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import SectionHeader from '@/components/SectionHeader.vue'
+import gsap from 'gsap'
+import { gsapEasing, prefersReducedMotion } from '@/utils/motionTokens'
+import { watch, nextTick, onBeforeUnmount } from 'vue'
 
 defineOptions({ name: 'DataManagement' })
 
@@ -446,429 +450,843 @@ async function batchDeleteByDate() {
     // handled
   }
 }
+
+/* ========== 表现层：章节锚点 / 入场编排 / 数据可视化动效 ==========
+   以下状态与函数只驱动视觉：不新增任何请求，也不改动上面的业务标识符。 */
+
+// 导航状态由共享组件 SectionNav 持有（/external 与本页同一份实现），页面只声明 SECTIONS 锚点
+import SectionNav from '@/components/SectionNav.vue'
+
+const pageRef = ref(null)
+const heroRef = ref(null)
+const dropRef = ref(null)
+
+// 锚点章节：data-nav 与 SectionHeader 的 index 一一对应
+const SECTIONS = [
+  { nav: 0, index: '01', label: '数据库设置' },
+  { nav: 1, index: '02', label: '备份与统计' },
+  { nav: 2, index: '03', label: '条件导出' },
+  { nav: 3, index: '04', label: 'JSON 导入' },
+  { nav: 4, index: '05', label: '批量操作' }
+]
+
+let reduceMotion = false
+let gsapCtx = null
+let revealObserver = null
+let spotRaf = 0
+let lampX = null
+let lampY = null
+let busyTween = null
+
+function num(v) {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+const isDefaultDb = computed(() => !dbInfo.value.currentPath)
+const activeDbName = computed(() => getFileName(dbInfo.value.currentPath) || 'default.db')
+const activeDbDir = computed(() => getParentDir(dbInfo.value.currentPath))
+const activeDbSize = computed(() => formatFileSize(dbInfo.value.fileSize || 0))
+const recentCount = computed(() => (dbInfo.value.recentPaths || []).length)
+const dbState = computed(() => (dbLoading.value ? 'busy' : isDefaultDb.value ? 'idle' : 'live'))
+const busy = computed(() => dbLoading.value || importing.value || dedupLoading.value)
+
+// 回收站占比：只由已有 dbInfo / backupStats 派生，供仪表盘环形使用
+const trashShare = computed(() => {
+  const q = num(backupStats.value ? backupStats.value.questionCount : dbInfo.value.questionCount)
+  const t = num(backupStats.value ? backupStats.value.trashCount : dbInfo.value.trashCount)
+  const total = q + t
+  return total > 0 ? Math.round((t / total) * 1000) / 10 : 0
+})
+
+const RING_LEN = 264
+const ringReady = ref(false)
+const ringOffset = computed(() => Math.round(RING_LEN - (RING_LEN * (ringReady.value ? trashShare.value : 0)) / 100))
+
+// data-stat 的取值表：模板里这些数字是静态 0，真实值由 tweenNumber 写入
+const statMap = computed(() => ({
+  questions: num(backupStats.value ? backupStats.value.questionCount : dbInfo.value.questionCount),
+  categories: num(backupStats.value ? backupStats.value.categoryCount : dbInfo.value.categoryCount),
+  types: num(backupStats.value ? backupStats.value.typeCounts.length : 0),
+  trash: num(backupStats.value ? backupStats.value.trashCount : dbInfo.value.trashCount),
+  recent: recentCount.value,
+  'b-questions': num(backupStats.value ? backupStats.value.questionCount : 0),
+  'b-categories': num(backupStats.value ? backupStats.value.categoryCount : 0),
+  'b-types': num(backupStats.value ? backupStats.value.typeCounts.length : 0),
+  'b-trash': num(backupStats.value ? backupStats.value.trashCount : 0),
+  dedup: num(dedupTotalDuplicates.value)
+}))
+
+// 后端没有「最近切换时间」字段，只能在前端观测路径变化时打点，因此文案限定在本次会话
+const sessionSwitchAt = ref('')
+watch(
+  () => dbInfo.value.currentPath,
+  () => {
+    const d = new Date()
+    const p = (n) => String(n).padStart(2, '0')
+    sessionSwitchAt.value = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+  }
+)
+
+function tweenNumber(el, to) {
+  const target = num(to)
+  const from = num(el.dataset.cur)
+  if (from === target) return
+  el.dataset.cur = String(target)
+  if (reduceMotion) {
+    el.textContent = String(target)
+    return
+  }
+  if (el._numTween) el._numTween.kill()
+  const proxy = { v: from }
+  el._numTween = gsap.to(proxy, {
+    v: target,
+    duration: 0.85,
+    ease: gsapEasing.smooth,
+    onUpdate: () => {
+      el.textContent = String(Math.round(proxy.v))
+    },
+    onComplete: () => {
+      el.textContent = String(target)
+    }
+  })
+}
+
+// 条宽交给 gsap 写内联宽度，模板只提供 data-w，避免 Vue patch 与补间互相覆盖
+function tweenBar(el, pct) {
+  const target = Math.max(0, Math.min(100, num(pct)))
+  if (reduceMotion) {
+    el.style.width = target + '%'
+    return
+  }
+  if (el._barTween) el._barTween.kill()
+  el._barTween = gsap.to(el, { width: target + '%', duration: 0.7, ease: gsapEasing.smooth })
+}
+
+function applyVisualsIn(scope) {
+  if (!scope) return
+  scope.querySelectorAll('[data-stat]').forEach((el) => tweenNumber(el, statMap.value[el.dataset.stat]))
+  scope.querySelectorAll('[data-w]').forEach((el) => tweenBar(el, el.dataset.w))
+}
+
+function playSection(el) {
+  el.classList.add('is-revealed')
+  if (!reduceMotion) {
+    const items = el.querySelectorAll('.dm-stagger > *')
+    if (items.length) {
+      gsap.fromTo(
+        items,
+        { y: 16, autoAlpha: 0 },
+        { y: 0, autoAlpha: 1, duration: 0.62, ease: gsapEasing.smooth, stagger: 0.06, immediateRender: false, clearProps: 'transform' }
+      )
+    }
+  }
+  applyVisualsIn(el)
+}
+
+function initReveal() {
+  const page = pageRef.value
+  if (!page) return
+  const nodes = page.querySelectorAll('[data-reveal]')
+  // reduce 或无 IntersectionObserver 时退化为静态呈现：只做可见态，不做位移
+  if (reduceMotion || typeof IntersectionObserver === 'undefined') {
+    nodes.forEach((el) => el.classList.add('is-revealed'))
+    applyVisualsIn(page)
+    return
+  }
+  revealObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return
+        playSection(entry.target)
+        revealObserver.unobserve(entry.target)
+      })
+    },
+    { threshold: 0.06, rootMargin: '0px 0px -4% 0px' }
+  )
+  nodes.forEach((el) => revealObserver.observe(el))
+}
+
+function heroIntro() {
+  const hero = heroRef.value
+  if (!hero) return
+  const items = hero.querySelectorAll('.dm-hero-in')
+  if (reduceMotion) {
+    gsap.set(items, { autoAlpha: 1, y: 0 })
+    return
+  }
+  gsap.fromTo(
+    items,
+    { y: 18, autoAlpha: 0 },
+    { y: 0, autoAlpha: 1, duration: 0.7, ease: gsapEasing.smooth, stagger: 0.07, delay: 0.05 }
+  )
+}
+
+function moveSpotlight(e) {
+  if (reduceMotion) return
+  const el = e.currentTarget
+  const x = e.clientX
+  const y = e.clientY
+  if (spotRaf) cancelAnimationFrame(spotRaf)
+  spotRaf = requestAnimationFrame(() => {
+    spotRaf = 0
+    const rect = el.getBoundingClientRect()
+    const px = x - rect.left
+    const py = y - rect.top
+    el.style.setProperty('--mx', px + 'px')
+    el.style.setProperty('--my', py + 'px')
+    if (lampX && lampY) {
+      lampX(px - 110)
+      lampY(py - 110)
+    }
+  })
+}
+
+function leaveSpotlight(e) {
+  if (reduceMotion) return
+  const el = e.currentTarget
+  el.classList.remove('is-lit')
+  if (lampX && lampY) {
+    lampX(0)
+    lampY(0)
+  }
+}
+
+function enterSpotlight(e) {
+  if (reduceMotion) return
+  e.currentTarget.classList.add('is-lit')
+}
+
+// 章节测量 / 滚动高亮 / 跳转全部由 SectionNav 承载，本页只声明锚点 data-nav
+
+// 拖拽反馈：状态类留在模板里，这里只在文件真正悬停进来的瞬间补一次弹跳
+watch(isDragging, (on) => {
+  const el = dropRef.value
+  if (!el) return
+  if (reduceMotion || !on) return
+  gsap.fromTo(el, { scale: 0.994 }, { scale: 1, duration: 0.45, ease: gsapEasing.bounce, clearProps: 'transform' })
+})
+
+// 忙碌态脉冲只在真的有请求在飞时循环，静止即 kill，且 reduce 下完全交给 CSS 静态态
+watch(busy, (on) => {
+  const el = pageRef.value && pageRef.value.querySelector('.dm-live')
+  if (!el) return
+  if (reduceMotion) return
+  if (on) {
+    if (busyTween) busyTween.kill()
+    busyTween = gsap.to(el, { scale: 1.035, duration: 0.7, ease: gsapEasing.sharp, yoyo: true, repeat: -1 })
+  } else if (busyTween) {
+    busyTween.kill()
+    busyTween = null
+    gsap.set(el, { clearProps: 'transform' })
+  }
+})
+
+watch([statMap, backupStats, dedupTotalDuplicates], () => {
+  nextTick(() => applyVisualsIn(pageRef.value))
+})
+
+onMounted(async () => {
+  reduceMotion = prefersReducedMotion()
+  await nextTick()
+  gsapCtx = gsap.context(() => {
+    const lamp = heroRef.value ? heroRef.value.querySelector('.dm-hero-lamp') : null
+    if (lamp) {
+      lampX = gsap.quickTo(lamp, 'x', { duration: 0.28, ease: gsapEasing.smooth })
+      lampY = gsap.quickTo(lamp, 'y', { duration: 0.28, ease: gsapEasing.smooth })
+    }
+    initReveal()
+    heroIntro()
+    ringReady.value = true
+    applyVisualsIn(heroRef.value)
+  }, pageRef.value)
+})
+
+onBeforeUnmount(() => {
+  if (revealObserver) {
+    revealObserver.disconnect()
+    revealObserver = null
+  }
+  if (busyTween) {
+    busyTween.kill()
+    busyTween = null
+  }
+  if (spotRaf) cancelAnimationFrame(spotRaf)
+  if (pageRef.value) {
+    pageRef.value.querySelectorAll('[data-stat], [data-w]').forEach((el) => {
+      if (el._numTween) el._numTween.kill()
+      if (el._barTween) el._barTween.kill()
+    })
+  }
+  if (gsapCtx) gsapCtx.revert()
+  gsapCtx = null
+  lampX = null
+  lampY = null
+})
 </script>
 
 <template>
-  <div>
+  <section ref="pageRef" class="dm-page">
     <PageHeader
       eyebrow="数据资产"
       eyebrow-en="DATA OPERATIONS"
       title="数据管理"
       description="数据库切换、备份与导入导出；批量操作前请先确认影响范围。"
+    >
+      <template #actions>
+        <span class="dm-live" :class="'is-' + dbState" role="status" aria-live="polite">
+          <i class="dm-live-dot" aria-hidden="true"></i>
+          <span class="dm-live-k">当前库</span>
+          <b class="dm-live-v" :title="dbInfo.currentPath || '项目默认数据库'">{{ activeDbName }}</b>
+        </span>
+      </template>
+    </PageHeader>
+
+    <!-- ===== Hero：数据库控制台 ===== -->
+    <section
+      ref="heroRef"
+      class="dm-console dm-hero"
+      data-reveal
+      @pointerenter="enterSpotlight"
+      @pointermove="moveSpotlight"
+      @pointerleave="leaveSpotlight"
+    >
+      <span class="dm-console-fx" aria-hidden="true">
+        <span class="dm-hero-grid"></span>
+        <span class="dm-hero-scan"></span>
+        <span class="dm-hero-lamp"></span>
+      </span>
+
+      <div class="dm-hero-top">
+        <div class="dm-hero-id">
+          <p class="dm-kicker dm-hero-in"><i aria-hidden="true">◆</i> ACTIVE DATABASE CONSOLE</p>
+          <h2 class="dm-hero-name dm-hero-in" :title="dbInfo.currentPath || '项目默认数据库'">
+            {{ isDefaultDb ? '未绑定独立库' : activeDbName }}
+          </h2>
+          <p class="dm-hero-path dm-hero-in">
+            {{ isDefaultDb ? '当前使用项目目录下的默认数据库文件' : activeDbDir + '/' }}
+          </p>
+          <dl class="dm-hero-facts dm-hero-in">
+            <div class="dm-fact">
+              <dt>文件体积</dt>
+              <dd>{{ activeDbSize }}</dd>
+            </div>
+            <div class="dm-fact">
+              <dt>近期库</dt>
+              <dd>{{ recentCount }} 个</dd>
+            </div>
+            <div class="dm-fact">
+              <dt>本次会话切换</dt>
+              <dd>{{ sessionSwitchAt || '未切换' }}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="dm-gauge dm-hero-in">
+          <svg class="dm-ring" viewBox="0 0 100 100" role="img" :aria-label="'回收站题目占比 ' + trashShare + '%'">
+            <circle class="dm-ring-bg" cx="50" cy="50" r="42"></circle>
+            <circle
+              class="dm-ring-val"
+              cx="50"
+              cy="50"
+              r="42"
+              :stroke-dasharray="RING_LEN"
+              :style="{ strokeDashoffset: ringOffset }"
+            ></circle>
+          </svg>
+          <p class="dm-gauge-read">
+            <b>{{ trashShare }}<i>%</i></b>
+            <span>回收站占比</span>
+          </p>
+        </div>
+      </div>
+
+      <ul class="dm-stats dm-stagger">
+        <li class="dm-stat">
+          <b class="dm-num" data-stat="questions">0</b>
+          <span class="dm-stat-k">题目总数</span>
+        </li>
+        <li class="dm-stat">
+          <b class="dm-num" data-stat="categories">0</b>
+          <span class="dm-stat-k">分类数量</span>
+        </li>
+        <li class="dm-stat">
+          <b class="dm-num" data-stat="types">0</b>
+          <span class="dm-stat-k">覆盖题型</span>
+        </li>
+        <li class="dm-stat">
+          <b class="dm-num" data-stat="trash">0</b>
+          <span class="dm-stat-k">回收站</span>
+        </li>
+        <li class="dm-stat">
+          <b class="dm-num" data-stat="recent">0</b>
+          <span class="dm-stat-k">近期库</span>
+        </li>
+      </ul>
+    </section>
+
+    <!-- ===== 章节锚点：≥1024 右侧导轨，<1024 顶部胶囊（与 /external 共用组件） ===== -->
+    <SectionNav
+      :sections="SECTIONS"
+      :container="pageRef"
+      locate-selector=".dm-console"
+      chips
     />
 
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <!-- Database Settings -->
-      <div class="card lg:col-span-2">
-        <div class="flex items-center gap-3 mb-5">
-          <div class="w-10 h-10 rounded-btn bg-indigo-50 dark:bg-indigo-900/30 flex items-center justify-center">
-            <svg class="w-5 h-5 text-indigo-600 dark:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+    <!-- ===== 01 数据库设置 ===== -->
+    <section class="dm-sec" data-nav="0" data-reveal>
+      <SectionHeader index="01" title="数据库设置" hint="切换、上传与移除题库数据库文件">
+        <template #badge>
+          <span class="dm-badge" :class="'is-' + dbState">{{ isDefaultDb ? '默认库' : '已绑定' }}</span>
+        </template>
+        <template #actions>
+          <button type="button" class="btn-primary dm-btn" :disabled="dbLoading" @click="triggerDbFileInput">
+            <svg v-if="dbLoading" class="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">数据库设置</h2>
-            <p class="text-xs text-notion-muted dark:text-notion-muted-dark">切换数据库文件以管理不同的题库</p>
-          </div>
-        </div>
-
-        <!-- Current DB Info -->
-        <div class="bg-notion-surface dark:bg-notion-surface-dark rounded-card p-4 mb-4 border border-notion-border dark:border-notion-border-dark">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="text-xs text-notion-muted dark:text-notion-muted-dark">当前数据库</span>
-            <span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 font-medium">使用中</span>
-          </div>
-          <div class="flex items-center gap-2 mb-3" :title="dbInfo.currentPath">
-            <svg class="w-4 h-4 text-indigo-500 dark:text-indigo-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
-            </svg>
-            <span class="text-sm font-medium text-notion-text dark:text-notion-text-dark truncate">{{ getFileName(dbInfo.currentPath) }}</span>
-          </div>
-          <p class="text-[11px] font-mono text-notion-muted dark:text-notion-muted-dark truncate mb-3 pl-6" :title="dbInfo.currentPath">{{ getParentDir(dbInfo.currentPath) }}/</p>
-          <div class="flex flex-wrap gap-x-6 gap-y-1.5 pl-6">
-            <div class="flex items-center gap-1.5 text-xs text-notion-muted dark:text-notion-muted-dark">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-              <span>题目 <strong class="text-notion-text dark:text-notion-text-dark">{{ dbInfo.questionCount }}</strong></span>
-            </div>
-            <div class="flex items-center gap-1.5 text-xs text-notion-muted dark:text-notion-muted-dark">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-              <span>回收站 <strong class="text-notion-text dark:text-notion-text-dark">{{ dbInfo.trashCount }}</strong></span>
-            </div>
-            <div class="flex items-center gap-1.5 text-xs text-notion-muted dark:text-notion-muted-dark">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
-              <span>分类 <strong class="text-notion-text dark:text-notion-text-dark">{{ dbInfo.categoryCount }}</strong></span>
-            </div>
-            <div class="flex items-center gap-1.5 text-xs text-notion-muted dark:text-notion-muted-dark">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4"/></svg>
-              <span>大小 <strong class="text-notion-text dark:text-notion-text-dark">{{ formatFileSize(dbInfo.fileSize) }}</strong></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Actions -->
-        <div class="flex flex-wrap items-center gap-2 mb-4">
-          <button @click="triggerDbFileInput" :disabled="dbLoading" class="btn-primary text-xs py-2 px-4">
-            <svg v-if="dbLoading" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-            <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+            <svg v-else class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+              />
             </svg>
             {{ dbLoading ? '处理中...' : '选择数据库文件' }}
           </button>
-          <input ref="dbFileInput" type="file" accept=".db" style="display:none" @change="handleDbFileSelect" />
-          <button @click="resetDb" :disabled="dbLoading || dbInfo.currentPath === dbInfo.recentPaths?.[0] && dbInfo.recentPaths?.length <= 1" class="btn-secondary text-xs py-2 px-4">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
-            </svg>
+          <button
+            type="button"
+            class="btn-secondary dm-btn"
+            :disabled="dbLoading || dbInfo.currentPath === dbInfo.recentPaths?.[0] && dbInfo.recentPaths?.length <= 1"
+            @click="resetDb"
+          >
             切回默认数据库
           </button>
-        </div>
+        </template>
+      </SectionHeader>
 
-        <!-- Recent databases -->
-        <div v-if="dbInfo.recentPaths && dbInfo.recentPaths.filter(p => p !== dbInfo.currentPath).length > 0">
-          <div class="flex items-center justify-between mb-2">
-            <p class="text-xs font-medium text-notion-muted dark:text-notion-muted-dark">最近使用的数据库</p>
-            <span class="text-[11px] text-notion-muted dark:text-notion-muted-dark">{{ dbInfo.recentPaths.length }} 个</span>
+      <div class="dm-console dm-console-plain">
+        <input ref="dbFileInput" type="file" accept=".db" class="hidden" @change="handleDbFileSelect" />
+
+        <div class="dm-grid-a dm-stagger">
+          <div class="dm-card">
+            <div class="dm-card-head">
+              <p class="dm-h">当前数据库</p>
+              <span class="dm-tag is-live">使用中</span>
+            </div>
+            <p class="dm-file-name" :title="dbInfo.currentPath">{{ getFileName(dbInfo.currentPath) || 'default.db' }}</p>
+            <p class="dm-file-path" :title="dbInfo.currentPath">{{ getParentDir(dbInfo.currentPath) }}/</p>
+            <ul class="dm-facts-row">
+              <li>
+                <span>题目</span>
+                <b>{{ dbInfo.questionCount }}</b>
+              </li>
+              <li>
+                <span>分类</span>
+                <b>{{ dbInfo.categoryCount }}</b>
+              </li>
+              <li>
+                <span>回收站</span>
+                <b>{{ dbInfo.trashCount }}</b>
+              </li>
+              <li>
+                <span>大小</span>
+                <b>{{ formatFileSize(dbInfo.fileSize) }}</b>
+              </li>
+            </ul>
           </div>
-          <div class="space-y-1">
-            <div
-              v-for="p in displayedRecentPaths"
-              :key="p"
-              class="flex items-center gap-3 px-3 py-2.5 rounded-card text-xs cursor-pointer transition-colors group"
-              :class="p === dbInfo.currentPath
-                ? 'bg-indigo-50/80 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800/40'
-                : 'hover:bg-gray-50 dark:hover:bg-gray-800/50 border border-transparent'"
-              @click="switchToRecent(p)"
-            >
-              <div class="w-7 h-7 rounded-btn flex items-center justify-center flex-shrink-0"
-                :class="p === dbInfo.currentPath ? 'bg-indigo-100 dark:bg-indigo-900/40' : 'bg-gray-100 dark:bg-gray-800 group-hover:bg-gray-200 dark:group-hover:bg-gray-700'">
-                <svg class="w-3.5 h-3.5" :class="p === dbInfo.currentPath ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-500 dark:text-gray-400'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
-                </svg>
-              </div>
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium truncate" :class="p === dbInfo.currentPath ? 'text-indigo-700 dark:text-indigo-300' : 'text-notion-text dark:text-notion-text-dark'">{{ getFileName(p) }}</span>
-                  <span v-if="p === dbInfo.currentPath" class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 font-medium flex-shrink-0">当前</span>
-                </div>
-                <p class="text-[11px] font-mono truncate" :class="p === dbInfo.currentPath ? 'text-indigo-500/70 dark:text-indigo-400/50' : 'text-notion-muted dark:text-notion-muted-dark'" :title="p">{{ getParentDir(p) }}/</p>
-              </div>
-              <button
-                v-if="p !== dbInfo.currentPath"
-                @click="removeRecentPath(p, $event)"
-                class="flex-shrink-0 p-1 rounded-btn opacity-0 group-hover:opacity-100 hover:bg-red-50 dark:hover:bg-red-900/20 text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-all"
-                title="从列表中移除"
+
+          <div v-if="dbInfo.recentPaths && dbInfo.recentPaths.filter(p => p !== dbInfo.currentPath).length > 0" class="dm-card">
+            <div class="dm-card-head">
+              <p class="dm-h">最近使用的数据库</p>
+              <span class="dm-count">{{ dbInfo.recentPaths.length }} 个</span>
+            </div>
+            <ul class="dm-recent">
+              <li
+                v-for="p in displayedRecentPaths"
+                :key="p"
+                class="dm-recent-item"
+                :class="{ 'is-current': p === dbInfo.currentPath }"
+                role="button"
+                tabindex="0"
+                :aria-label="'切换到 ' + getFileName(p)"
+                @click="switchToRecent(p)"
+                @keydown.enter.prevent="switchToRecent(p)"
+                @keydown.space.prevent="switchToRecent(p)"
               >
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                </svg>
+                <span class="dm-recent-ico" aria-hidden="true">
+                  <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 4 4 5 4 7z"
+                    />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 11h6M9 8h6" />
+                  </svg>
+                </span>
+                <span class="dm-recent-text">
+                  <span class="dm-recent-name">
+                    {{ getFileName(p) }}
+                    <em v-if="p === dbInfo.currentPath" class="dm-tag is-live">当前</em>
+                  </span>
+                  <span class="dm-recent-path" :title="p">{{ getParentDir(p) }}/</span>
+                </span>
+                <button
+                  v-if="p !== dbInfo.currentPath"
+                  type="button"
+                  class="dm-recent-del"
+                  title="从列表中移除"
+                  @click="removeRecentPath(p, $event)"
+                >
+                  <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                </button>
+              </li>
+            </ul>
+            <button
+              v-if="dbInfo.recentPaths.length > RECENT_SHOW_LIMIT"
+              type="button"
+              class="dm-more"
+              @click="showAllRecent = !showAllRecent"
+            >
+              <svg
+                class="h-3 w-3 transition-transform duration-300"
+                :class="{ 'rotate-180': showAllRecent }"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+              </svg>
+              {{ showAllRecent ? '收起列表' : `查看全部 ${dbInfo.recentPaths.length} 个` }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 02 备份与统计 ===== -->
+    <section class="dm-sec" data-nav="1" data-reveal>
+      <SectionHeader index="02" title="备份与统计" hint="当前库快照、题型分布与分类排行">
+        <template #badge>
+          <span class="dm-badge">BACKUP v1</span>
+        </template>
+        <template #actions>
+          <button type="button" class="btn-secondary dm-btn" @click="loadBackupStats">刷新快照</button>
+          <button type="button" class="btn-primary dm-btn" @click="downloadBackup">下载数据库备份</button>
+        </template>
+      </SectionHeader>
+
+      <div class="dm-console">
+        <span class="dm-console-fx" aria-hidden="true">
+          <span class="dm-hero-grid"></span>
+        </span>
+        <div v-if="!backupStats" class="dm-empty">
+          <p class="dm-empty-t">尚未读取快照数据</p>
+          <p class="dm-sub">快照只统计当前库，切换数据库后需要重新刷新。</p>
+          <button type="button" class="btn-primary dm-btn" @click="loadBackupStats">立即刷新</button>
+        </div>
+        <template v-else>
+          <ul class="dm-stats dm-stats-4 dm-stagger">
+            <li class="dm-stat">
+              <b class="dm-num" data-stat="b-questions">0</b>
+              <span class="dm-stat-k">备份题目</span>
+            </li>
+            <li class="dm-stat">
+              <b class="dm-num" data-stat="b-categories">0</b>
+              <span class="dm-stat-k">分类数量</span>
+            </li>
+            <li class="dm-stat">
+              <b class="dm-num" data-stat="b-types">0</b>
+              <span class="dm-stat-k">覆盖题型</span>
+            </li>
+            <li class="dm-stat">
+              <b class="dm-num" data-stat="b-trash">0</b>
+              <span class="dm-stat-k">回收站</span>
+            </li>
+          </ul>
+
+          <div class="dm-grid2 dm-stagger">
+            <div class="dm-block">
+              <div class="dm-block-head">
+                <p class="dm-h">题型分布</p>
+                <span class="dm-sub">按题目数排序</span>
+              </div>
+              <div v-if="backupStats.typeCounts.length" class="dm-bars">
+                <div v-for="t in backupStats.typeCounts" :key="t.type" class="dm-row">
+                  <span class="badge badge-type dm-row-type">{{ t.type }}</span>
+                  <span class="dm-track"><i class="dm-fill" :data-w="(t.count / backupTypeMax * 100).toFixed(1)"></i></span>
+                  <b class="dm-row-v">{{ t.count }}</b>
+                </div>
+              </div>
+              <p v-else class="dm-sub">当前库还没有题目。</p>
+            </div>
+
+            <div class="dm-block">
+              <div class="dm-block-head">
+                <p class="dm-h">题目最多的分类</p>
+                <span class="dm-sub">Top {{ backupStats.topCategories.length }}</span>
+              </div>
+              <div v-if="backupStats.topCategories.length" class="dm-bars">
+                <div v-for="(c, i) in backupStats.topCategories" :key="c.name" class="dm-row">
+                  <span class="dm-row-idx">{{ String(i + 1).padStart(2, '0') }}</span>
+                  <span class="dm-row-name" :title="c.name">{{ c.name }}</span>
+                  <span class="dm-track"><i class="dm-fill is-alt" :data-w="(c.count / backupCategoryMax * 100).toFixed(1)"></i></span>
+                  <b class="dm-row-v">{{ c.count }}</b>
+                </div>
+              </div>
+              <p v-else class="dm-sub">暂无分类统计。</p>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- ===== 03 条件导出 ===== -->
+    <section class="dm-sec" data-nav="2" data-reveal>
+      <SectionHeader index="03" title="条件导出" hint="按题型与分类筛选后导出 JSON">
+        <template #badge>
+          <span class="dm-badge">{{ exportFilters.types.length || '全部' }} 题型</span>
+        </template>
+        <template #actions>
+          <button type="button" class="btn-primary dm-btn" @click="exportJson">导出 JSON</button>
+        </template>
+      </SectionHeader>
+
+      <div class="dm-console">
+        <span class="dm-console-fx" aria-hidden="true">
+          <span class="dm-hero-grid"></span>
+        </span>
+        <div class="dm-grid-a dm-stagger">
+          <div class="dm-field">
+            <label class="dm-label">题型筛选（可多选）</label>
+            <div class="dm-chips">
+              <button
+                v-for="t in QUESTION_TYPES"
+                :key="t"
+                type="button"
+                class="dm-chip"
+                :class="{ 'is-on': exportFilters.types.includes(t) }"
+                :aria-pressed="exportFilters.types.includes(t) ? 'true' : 'false'"
+                @click="exportFilters.types.includes(t) ? exportFilters.types.splice(exportFilters.types.indexOf(t), 1) : exportFilters.types.push(t)"
+              >
+                {{ t }}
               </button>
             </div>
+            <p class="dm-sub">不选任何题型即导出全部题型。</p>
           </div>
-          <button
-            v-if="dbInfo.recentPaths.length > RECENT_SHOW_LIMIT"
-            @click="showAllRecent = !showAllRecent"
-            class="mt-2 text-xs text-notion-accent dark:text-notion-accent-dark hover:underline flex items-center gap-1"
-          >
-            <svg class="w-3 h-3 transition-transform" :class="showAllRecent ? 'rotate-180' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-            </svg>
-            {{ showAllRecent ? '收起' : `查看全部 ${dbInfo.recentPaths.length} 个` }}
-          </button>
-        </div>
-      </div>
-
-      <!-- Database Backup + Export / Import JSON -->
-      <div class="card lg:col-span-2">
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <!-- Left: Database Backup -->
-          <div class="flex flex-col">
-            <div class="flex items-center gap-3 mb-4">
-          <div class="w-10 h-10 rounded-btn bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center">
-            <svg class="w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
-            </svg>
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">数据库备份</h2>
-            <p class="text-xs text-notion-muted dark:text-notion-muted-dark">下载完整的 SQLite 数据库文件</p>
-          </div>
-        </div>
-
-        <!-- Backup contents overview -->
-        <div v-if="backupStats" class="bg-notion-surface dark:bg-notion-surface-dark rounded-card p-4 mb-4 border border-notion-border dark:border-notion-border-dark">
-          <div class="flex items-center gap-1.5 mb-3">
-            <svg class="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-            </svg>
-            <span class="text-xs font-medium text-notion-muted dark:text-notion-muted-dark">本次备份包含</span>
-          </div>
-
-          <!-- Totals -->
-          <div class="grid grid-cols-3 gap-2 mb-4">
-            <div class="rounded-btn bg-white dark:bg-notion-surface-dark/60 border border-notion-border dark:border-notion-border-dark px-2 py-2.5 text-center">
-              <div class="text-lg font-bold text-notion-text dark:text-notion-text-dark leading-tight">{{ backupStats.questionCount }}</div>
-              <div class="text-[11px] text-notion-muted dark:text-notion-muted-dark mt-0.5">题目</div>
-            </div>
-            <div class="rounded-btn bg-white dark:bg-notion-surface-dark/60 border border-notion-border dark:border-notion-border-dark px-2 py-2.5 text-center">
-              <div class="text-lg font-bold text-notion-text dark:text-notion-text-dark leading-tight">{{ backupStats.categoryCount }}</div>
-              <div class="text-[11px] text-notion-muted dark:text-notion-muted-dark mt-0.5">分类</div>
-            </div>
-            <div class="rounded-btn bg-white dark:bg-notion-surface-dark/60 border border-notion-border dark:border-notion-border-dark px-2 py-2.5 text-center">
-              <div class="text-lg font-bold text-notion-text dark:text-notion-text-dark leading-tight">{{ backupStats.trashCount }}</div>
-              <div class="text-[11px] text-notion-muted dark:text-notion-muted-dark mt-0.5">回收站</div>
-            </div>
-          </div>
-
-          <!-- Type distribution -->
-          <div v-if="backupStats.typeCounts.length">
-            <p class="text-[11px] font-medium text-notion-muted dark:text-notion-muted-dark mb-2">题型分布</p>
-            <div class="space-y-1.5">
-              <div v-for="t in backupStats.typeCounts" :key="t.type" class="flex items-center gap-2">
-                <span class="text-[11px] text-notion-muted dark:text-notion-muted-dark w-12 flex-shrink-0">{{ t.type }}</span>
-                <div class="flex-1 h-1.5 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
-                  <div class="h-full rounded-full bg-blue-500 dark:bg-blue-400" :style="{ width: (t.count / backupTypeMax * 100) + '%' }"></div>
-                </div>
-                <span class="text-[11px] font-medium text-notion-text dark:text-notion-text-dark w-10 text-right flex-shrink-0">{{ t.count }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Top categories -->
-          <div v-if="backupStats.topCategories.length" class="mt-4 pt-4 border-t border-notion-border dark:border-notion-border-dark">
-            <p class="text-[11px] font-medium text-notion-muted dark:text-notion-muted-dark mb-2">题目最多的分类</p>
-            <div class="space-y-1.5">
-              <div v-for="c in backupStats.topCategories" :key="c.name" class="flex items-center gap-2">
-                <span class="text-[11px] text-notion-muted dark:text-notion-muted-dark truncate flex-1" :title="c.name">{{ c.name }}</span>
-                <div class="w-24 h-1.5 rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden flex-shrink-0">
-                  <div class="h-full rounded-full bg-indigo-500 dark:bg-indigo-400" :style="{ width: (c.count / backupCategoryMax * 100) + '%' }"></div>
-                </div>
-                <span class="text-[11px] font-medium text-notion-text dark:text-notion-text-dark w-10 text-right flex-shrink-0">{{ c.count }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <button @click="downloadBackup" class="btn-primary w-full justify-center mt-auto">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-          </svg>
-          下载数据库备份
-        </button>
-          </div>
-
-          <!-- Export / Import JSON -->
-          <div class="flex flex-col gap-6 lg:border-l lg:border-notion-border dark:lg:border-notion-border-dark lg:pl-6">
-            <div>
-            <div class="flex items-center gap-3 mb-4">
-              <div class="w-10 h-10 rounded-btn bg-green-50 dark:bg-green-900/30 flex items-center justify-center">
-                <svg class="w-5 h-5 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                </svg>
-              </div>
-              <div>
-                <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">导出 JSON</h2>
-                <p class="text-xs text-notion-muted dark:text-notion-muted-dark">按条件导出题目为 JSON 文件</p>
-              </div>
-            </div>
-            <div class="space-y-3 mb-4">
-              <div>
-                <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1">题型筛选（可多选）</label>
-                <div class="flex flex-wrap gap-1.5">
-                  <button
-                    v-for="t in QUESTION_TYPES"
-                    :key="t"
-                    type="button"
-                    @click="exportFilters.types.includes(t) ? exportFilters.types.splice(exportFilters.types.indexOf(t), 1) : exportFilters.types.push(t)"
-                    :class="[
-                      'px-2.5 py-1 rounded-btn text-xs font-medium border transition-colors',
-                      exportFilters.types.includes(t)
-                        ? 'border-notion-accent dark:border-notion-accent-dark bg-notion-accent/10 dark:bg-notion-accent-dark/15 text-notion-accent dark:text-notion-accent-dark'
-                        : 'border-notion-border dark:border-notion-border-dark text-notion-muted dark:text-notion-muted-dark hover:border-gray-300 dark:hover:border-gray-600'
-                    ]"
-                  >{{ t }}</button>
-                </div>
-              </div>
-              <div>
-                <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1">分类筛选</label>
-                <SearchableSelect
-                  :modelValue="exportFilters.category"
-                  @update:modelValue="(v) => exportFilters.category = v"
-                  :options="categories.map(c => ({ label: c.name, value: c.name }))"
-                  allLabel="全部分类"
-                  placeholder="全部分类"
-                />
-              </div>
-            </div>
-            <button @click="exportJson" class="btn-primary w-full justify-center">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
-              </svg>
-              导出 JSON
-            </button>
-            </div>
-
-            <div class="border-t border-notion-border dark:border-notion-border-dark"></div>
-
-            <!-- Import JSON -->
-            <div class="flex-1 flex flex-col">
-              <div class="flex items-center gap-3 mb-4">
-                <div class="w-10 h-10 rounded-btn bg-purple-50 dark:bg-purple-900/30 flex items-center justify-center">
-                  <svg class="w-5 h-5 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-                  </svg>
-                </div>
-                <div>
-                  <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">导入 JSON</h2>
-                  <p class="text-xs text-notion-muted dark:text-notion-muted-dark">从 JSON 文件导入题目，重复和答案冲突会逐条展示</p>
-                </div>
-              </div>
-              <div class="space-y-3 flex-1 flex flex-col">
-              <div class="flex items-center gap-3">
-                <label class="btn-secondary cursor-pointer">
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-                  </svg>
-                  选择文件
-                  <input type="file" accept=".json" @change="handleFileUpload" class="hidden" />
-                </label>
-                <span class="text-xs text-notion-muted dark:text-notion-muted-dark">或直接粘贴 JSON 数据</span>
-              </div>
-              <textarea
-                v-model="importText"
-                rows="8"
-                class="input-field font-mono text-xs flex-1 min-h-[160px] resize-none"
-                :class="isDragging ? 'ring-2 ring-notion-accent/40 dark:ring-notion-accent-dark/40 border-notion-accent dark:border-notion-accent-dark' : ''"
-                placeholder='[{"type":"单选题","content":"题目内容","options":["A","B","C","D"],"answers":["A"],"category":"默认"}]'
-                @dragover="onDragOver"
-                @dragleave="onDragLeave"
-                @drop="onDrop"
-              />
-              <div class="flex justify-end">
-                <button @click="importJson" :disabled="importing || !importText.trim()" class="btn-primary">
-                  <svg v-if="importing" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                  </svg>
-                  {{ importing ? '导入中...' : '开始导入' }}
-                </button>
-              </div>
-            </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Batch Delete -->
-      <div class="card lg:col-span-2 mt-6">
-        <div class="flex items-center gap-3 mb-4">
-          <div class="w-10 h-10 rounded-btn bg-red-50 dark:bg-red-900/30 flex items-center justify-center">
-            <svg class="w-5 h-5 text-red-600 dark:text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-            </svg>
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">按条件批量删除</h2>
-            <p class="text-xs text-notion-muted dark:text-notion-muted-dark">按日期、题型或分类批量删除题目（至少选一个条件）</p>
-          </div>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-          <div>
-            <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1">起始日期（之后）</label>
-            <input v-model="batchFilters.after" type="date" class="input-field" />
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1">结束日期（之前）</label>
-            <input v-model="batchFilters.before" type="date" class="input-field" />
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1">题型</label>
-            <select v-model="batchFilters.type" class="select-field w-full">
-              <option value="">全部</option>
-              <option v-for="t in QUESTION_TYPES" :key="t" :value="t">{{ t }}</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1">分类</label>
+          <div class="dm-field">
+            <label class="dm-label">分类筛选</label>
             <SearchableSelect
-              :modelValue="batchFilters.category"
-              @update:modelValue="(v) => batchFilters.category = v"
+              :modelValue="exportFilters.category"
+              @update:modelValue="(v) => exportFilters.category = v"
               :options="categories.map(c => ({ label: c.name, value: c.name }))"
-              allLabel="全部"
-              placeholder="全部"
+              allLabel="全部分类"
+              placeholder="全部分类"
             />
           </div>
         </div>
-        <div class="flex justify-end">
-          <button @click="batchDeleteByDate" class="btn-danger">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-            </svg>
-            批量删除
-          </button>
-        </div>
       </div>
-    </div>
+    </section>
 
-    <!-- Dedup Tool -->
-    <div class="card lg:col-span-2 mt-6">
-      <div class="flex items-center gap-3 mb-4">
-        <div class="w-10 h-10 rounded-btn bg-amber-50 dark:bg-amber-900/30 flex items-center justify-center">
-          <svg class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-        </div>
-        <div>
-          <h2 class="text-base font-semibold text-notion-text dark:text-notion-text-dark">题目去重</h2>
-          <p class="text-xs text-notion-muted dark:text-notion-muted-dark">扫描题型+内容完全相同的题目，选择保留哪条</p>
-        </div>
-      </div>
-      <div class="flex flex-wrap items-center gap-3 mb-4">
-        <button @click="scanDuplicates" :disabled="dedupLoading" class="btn-primary">
-          {{ dedupLoading ? '扫描中...' : '扫描重复题目' }}
-        </button>
-        <template v-if="dedupGroups.length > 0">
-          <span class="text-sm text-notion-muted dark:text-notion-muted-dark">发现 <strong>{{ dedupGroups.length }}</strong> 组重复，共 <strong class="text-amber-600 dark:text-amber-400">{{ dedupTotalDuplicates }}</strong> 条待清理</span>
-          <button @click="selectNewestAll" class="btn-secondary text-xs py-1.5 px-3">全部保留最新</button>
-          <button @click="selectOldestAll" class="btn-secondary text-xs py-1.5 px-3">全部保留最早</button>
-          <button @click="resolveDuplicates" :disabled="dedupLoading" class="btn-danger text-xs py-1.5 px-3">去重处理（移除 {{ dedupTotalDuplicates }} 条）</button>
+    <!-- ===== 04 JSON 导入 ===== -->
+    <section class="dm-sec" data-nav="3" data-reveal>
+      <SectionHeader index="04" title="JSON 导入" hint="粘贴或拖入 .json，重复与冲突逐条确认">
+        <template #badge>
+          <span class="dm-badge is-caution">写入当前库</span>
         </template>
+        <template #actions>
+          <label class="btn-secondary dm-btn dm-file-label">
+            选择文件
+            <input type="file" accept=".json" class="hidden" @change="handleFileUpload" />
+          </label>
+        </template>
+      </SectionHeader>
+
+      <div class="dm-console">
+        <span class="dm-console-fx" aria-hidden="true">
+          <span class="dm-hero-grid"></span>
+        </span>
+        <div class="dm-import dm-stagger">
+          <div ref="dropRef" class="dm-drop" :class="{ 'is-dragging': isDragging }">
+            <span class="dm-drop-corner" aria-hidden="true">
+              <i class="dm-drop-tick dm-drop-tick-tl"></i>
+              <i class="dm-drop-tick dm-drop-tick-tr"></i>
+              <i class="dm-drop-tick dm-drop-tick-br"></i>
+              <i class="dm-drop-tick dm-drop-tick-bl"></i>
+            </span>
+            <textarea
+              v-model="importText"
+              rows="8"
+              class="input-field dm-textarea font-mono text-xs"
+              placeholder='[{"type":"单选题","content":"题目内容","options":["A","B"],"answers":["A"],"category":"默认分类"}]'
+              @dragover="onDragOver"
+              @dragleave="onDragLeave"
+              @drop="onDrop"
+            ></textarea>
+            <p class="dm-drop-hint">
+              <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+                />
+              </svg>
+              也可把 .json 文件直接拖到这里
+            </p>
+          </div>
+          <div class="dm-endrow">
+            <span class="dm-sub">{{ importText.trim() ? `待导入 ${importText.trim().length} 个字符` : '等待粘贴或拖入 JSON 数组' }}</span>
+            <button type="button" class="btn-primary dm-btn" :disabled="importing || !importText.trim()" @click="importJson">
+              <svg v-if="importing" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              {{ importing ? '导入中...' : '开始导入' }}
+            </button>
+          </div>
+        </div>
       </div>
-      <div v-if="dedupGroups.length > 0" class="space-y-4 max-h-[600px] overflow-y-auto">
-        <div v-for="(group, gi) in dedupGroups" :key="gi" class="border border-notion-border dark:border-notion-border-dark rounded-card overflow-hidden">
-          <div class="px-4 py-3 bg-amber-50/50 dark:bg-amber-900/10 border-b border-notion-border dark:border-notion-border-dark flex items-center gap-3">
-            <span class="badge badge-type">{{ group.type }}</span>
-            <span class="badge badge-category">{{ group.items[0]?.category || '默认' }}</span>
-            <span class="ml-auto text-xs font-medium text-amber-600 dark:text-amber-400">{{ group.count }} 条相同</span>
-          </div>
-          <div class="px-4 py-2 border-b border-notion-border dark:border-notion-border-dark bg-gray-50/30 dark:bg-gray-800/30">
-            <p class="text-sm text-notion-text dark:text-notion-text-dark line-clamp-2">{{ group.content }}</p>
-          </div>
-          <div class="divide-y divide-notion-border dark:divide-notion-border-dark">
-            <div v-for="item in group.items" :key="item.id" class="px-4 py-3 flex items-center gap-3" :class="dedupSelections[gi] === item.id ? 'bg-green-50/50 dark:bg-green-900/10' : 'bg-red-50/30 dark:bg-red-900/5'">
-              <input type="radio" :name="`dedup-g${gi}`" :checked="dedupSelections[gi]===item.id" @change="selectDedupKeep(gi, item.id)" class="accent-notion-accent dark:accent-notion-accent-dark" />
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2 mb-1">
-                  <span class="text-xs font-mono text-notion-muted dark:text-notion-muted-dark">ID: {{ item.id }}</span>
-                  <span v-if="dedupSelections[gi]===item.id" class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">保留</span>
-                  <span v-else class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">移除</span>
-                </div>
-                <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-notion-muted dark:text-notion-muted-dark">
-                  <span>创建: {{ formatDate(item.created_at, 'datetime') }}</span>
-                  <span>更新: {{ formatDate(item.updated_at, 'datetime') }}</span>
-                  <span v-if="item.answers">答案: {{ Array.isArray(item.answers) ? item.answers.join(', ') : item.answers }}</span>
-                </div>
-              </div>
+    </section>
+
+    <!-- ===== 05 批量操作 ===== -->
+    <section class="dm-sec" data-nav="4" data-reveal>
+      <SectionHeader index="05" title="批量操作" hint="按条件删除与重复题去重，执行前请确认影响范围" />
+
+      <div class="dm-subset">
+        <SectionHeader index="05 · A" title="按条件批量删除" hint="日期与题型分类可任意组合">
+          <template #badge>
+            <span class="dm-badge is-danger">移入回收站</span>
+          </template>
+        </SectionHeader>
+        <div class="dm-console dm-console-danger">
+          <span class="dm-console-fx" aria-hidden="true">
+            <span class="dm-hero-grid"></span>
+          </span>
+          <div class="dm-form dm-stagger">
+            <div class="dm-field">
+              <label class="dm-label" for="dm-del-after">起始日期（之后）</label>
+              <input id="dm-del-after" v-model="batchFilters.after" type="date" class="input-field" />
+            </div>
+            <div class="dm-field">
+              <label class="dm-label" for="dm-del-before">结束日期（之前）</label>
+              <input id="dm-del-before" v-model="batchFilters.before" type="date" class="input-field" />
+            </div>
+            <div class="dm-field">
+              <label class="dm-label" for="dm-del-type">题型</label>
+              <span class="dm-select">
+                <select id="dm-del-type" v-model="batchFilters.type" class="select-field">
+                  <option value="">全部题型</option>
+                  <option v-for="t in QUESTION_TYPES" :key="t" :value="t">{{ t }}</option>
+                </select>
+              </span>
+            </div>
+            <div class="dm-field">
+              <label class="dm-label">分类</label>
+              <SearchableSelect
+                :modelValue="batchFilters.category"
+                @update:modelValue="(v) => batchFilters.category = v"
+                :options="categories.map(c => ({ label: c.name, value: c.name }))"
+                allLabel="全部分类"
+                placeholder="全部分类"
+              />
             </div>
           </div>
+          <div class="dm-endrow">
+            <span class="dm-sub">删除的题目进入回收站，可在回收站恢复。</span>
+            <button type="button" class="btn-danger dm-btn" @click="batchDeleteByDate">批量删除</button>
+          </div>
         </div>
       </div>
-      <div v-else-if="!dedupLoading" class="text-center py-8">
-        <p class="text-sm text-notion-muted dark:text-notion-muted-dark">点击「扫描重复题目」开始检测</p>
-      </div>
-    </div>
 
-    <!-- Import Category Dialog -->
+      <div class="dm-subset">
+        <SectionHeader index="05 · B" title="重复题目去重" hint="题型与内容完全相同的题目只保留一条">
+          <template #actions>
+            <button type="button" class="btn-secondary dm-btn" @click="scanDuplicates">
+              <svg v-if="dedupLoading" class="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <svg v-else class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M9 12h6M9 8h6M9 16h4M5 4h11a3 3 0 013 3v13l-3-2H5a3 3 0 01-3-3V7a3 3 0 013-3z"
+                />
+              </svg>
+              {{ dedupLoading ? '扫描中...' : '扫描重复题目' }}
+            </button>
+          </template>
+        </SectionHeader>
+
+        <div class="dm-console">
+          <span class="dm-console-fx" aria-hidden="true">
+            <span class="dm-hero-grid"></span>
+          </span>
+          <div v-if="dedupGroups.length" class="dm-dedup">
+            <div class="dm-dedup-bar">
+              <p class="dm-sub">
+                待移除 <b class="dm-num-sm" data-stat="dedup">0</b> 条 · 每组保留你选定的那一条
+              </p>
+              <div class="dm-dedup-acts">
+                <button type="button" class="dm-link" @click="selectNewestAll">全选最新</button>
+                <button type="button" class="dm-link" @click="selectOldestAll">全选最旧</button>
+                <button type="button" class="btn-danger dm-btn" :disabled="dedupLoading" @click="resolveDuplicates">
+                  去重处理（移除 {{ dedupTotalDuplicates }} 条）
+                </button>
+              </div>
+            </div>
+
+            <div class="dm-groups">
+              <article v-for="(group, gi) in dedupGroups" :key="gi" class="dm-group">
+                <header class="dm-group-head">
+                  <span class="badge badge-type">{{ group.type }}</span>
+                  <span class="badge badge-category">{{ group.items[0]?.category || '默认' }}</span>
+                  <span class="dm-group-count">{{ group.count }} 条相同</span>
+                </header>
+                <p class="dm-group-content">{{ group.content }}</p>
+                <ul class="dm-items">
+                  <li v-for="item in group.items" :key="item.id" class="dm-item" :class="{ 'is-keep': dedupSelections[gi] === item.id }">
+                    <label class="dm-item-main">
+                      <input
+                        type="radio"
+                        :name="`dedup-g${gi}`"
+                        class="dm-radio"
+                        :checked="dedupSelections[gi] === item.id"
+                        @change="selectDedupKeep(gi, item.id)"
+                      />
+                      <span class="dm-item-body">
+                        <span class="dm-item-text">{{ item.content }}</span>
+                        <span class="dm-item-meta">
+                          ID {{ item.id }} · 创建 {{ formatDate(item.created_at, 'datetime') }} · 更新 {{ formatDate(item.updated_at, 'datetime') }}
+                        </span>
+                        <span v-if="item.answers && item.answers.length" class="dm-item-answers">答案：{{ item.answers.join(' / ') }}</span>
+                      </span>
+                      <span class="dm-item-flag" :class="dedupSelections[gi] === item.id ? 'is-ok' : 'is-danger'">
+                        {{ dedupSelections[gi] === item.id ? '保留' : '移除' }}
+                      </span>
+                    </label>
+                  </li>
+                </ul>
+              </article>
+            </div>
+          </div>
+          <div v-else-if="dedupLoading" class="dm-empty">
+            <p class="dm-empty-t">正在扫描重复题目…</p>
+          </div>
+          <div v-else class="dm-empty">
+            <p class="dm-empty-t">还没有重复题数据</p>
+            <p class="dm-sub">点击「扫描重复题目」开始检测。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <ImportCategoryDialog
       v-if="showCategoryDialog"
       :categories="importCategories"
@@ -878,7 +1296,6 @@ async function batchDeleteByDate() {
       @cancel="onCategoryCancelled"
     />
 
-    <!-- Import Result Dialog -->
     <ImportResultDialog
       v-if="showResultDialog"
       :duplicates="resultDuplicates"
@@ -888,34 +1305,1307 @@ async function batchDeleteByDate() {
       @resolved="closeResultDialog"
     />
 
-    <!-- DB Upload Naming Dialog -->
-    <div v-if="showUploadDialog" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="cancelUpload">
-      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md p-4 sm:p-6">
-        <h3 class="text-base font-semibold text-notion-text dark:text-notion-text-dark mb-2">上传数据库</h3>
-        <p class="text-sm text-notion-muted dark:text-notion-muted-dark mb-4">
-          文件：<strong class="text-notion-text dark:text-notion-text-dark">{{ pendingDbFile?.name }}</strong>
+    <div v-if="showUploadDialog" class="dm-modal" @click.self="cancelUpload">
+      <div class="dm-modal-panel">
+        <h3 class="dm-modal-title">自定义数据库名称</h3>
+        <p class="dm-modal-sub">
+          上传成功后将自动切换到该数据库。文件名为 <b>{{ pendingDbFile?.name }}</b>
         </p>
-        <div class="mb-5">
-          <label class="block text-xs font-medium text-notion-muted dark:text-notion-muted-dark mb-1.5">数据库名称</label>
+        <div class="dm-modal-body">
+          <label class="dm-label">自定义名称</label>
           <input
             v-model="uploadCustomName"
             type="text"
-            class="input-field w-full"
-            placeholder="输入数据库名称"
+            class="input-field"
+            placeholder="留空则使用原文件名"
             @keyup.enter="confirmUpload"
           />
-          <p class="text-[11px] text-notion-muted dark:text-notion-muted-dark mt-1.5">将保存为 <code class="text-notion-accent dark:text-notion-accent-dark">{{ uploadCustomName || '...' }}.db</code></p>
+          <p class="dm-modal-hint">将保存为 {{ uploadCustomName || (pendingDbFile?.name || "database.db") }}.db</p>
         </div>
-        <div class="flex gap-2 justify-end">
-          <button @click="cancelUpload" class="btn-secondary">取消</button>
-          <button @click="confirmUpload" class="btn-primary">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-            </svg>
-            上传
-          </button>
+        <div class="dm-modal-actions">
+          <button type="button" class="btn-secondary dm-btn" @click="cancelUpload">取消</button>
+          <button type="button" class="btn-primary dm-btn" @click="confirmUpload">确认上传</button>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 </template>
+
+<style scoped>
+/* 结构性色彩全部走 --theme-*，只给危险/成功两类语义保留固定色相，
+   并压低饱和度与面积，保证 6 套主题 × 亮暗同时成立。 */
+.dm-page {
+  --dm-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --dm-line: color-mix(in srgb, var(--theme-border) 82%, transparent);
+  --dm-soft: color-mix(in srgb, var(--theme-text) 5%, transparent);
+  --dm-soft-2: color-mix(in srgb, var(--theme-text) 9%, transparent);
+  --dm-accent-10: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+  --dm-accent-soft: color-mix(in srgb, var(--theme-accent) 18%, transparent);
+  --danger: #b4453a;
+  --danger-soft: color-mix(in srgb, #b4453a 12%, transparent);
+  --ok: #2f7d5d;
+  --ok-soft: color-mix(in srgb, #2f7d5d 12%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+  padding-bottom: 3.5rem;
+}
+
+.dark .dm-page {
+  --dm-line: color-mix(in srgb, var(--theme-border) 110%, transparent);
+  --danger: #d9695c;
+  --danger-soft: color-mix(in srgb, #d9695c 16%, transparent);
+  --ok: #58b98d;
+  --ok-soft: color-mix(in srgb, #58b98d 16%, transparent);
+}
+
+/* ---------- PageHeader 里的当前库状态胶囊 ---------- */
+.dm-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: 15rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 999px;
+  background: var(--theme-surface);
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.dm-live-dot {
+  flex: 0 0 auto;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: var(--theme-muted);
+}
+
+.dm-live.is-live .dm-live-dot {
+  background: var(--ok);
+  animation: dmPulse 2.8s ease-out infinite;
+}
+
+.dm-live.is-busy .dm-live-dot {
+  background: var(--theme-accent);
+  animation: dmPulse 1.2s ease-out infinite;
+}
+
+.dm-live-k {
+  flex: 0 0 auto;
+  color: var(--theme-muted);
+}
+
+.dm-live-v {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--dm-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes dmPulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--dm-accent-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* ---------- 控制台面板（Hero 与各章节共用） ---------- */
+.dm-console {
+  position: relative;
+  isolation: isolate;
+  padding: 1.35rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--theme-text) 3%, var(--theme-surface)), var(--theme-surface));
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.dm-console > :not(.dm-console-fx) {
+  position: relative;
+  z-index: 1;
+}
+
+/* 面板内有输入框获得焦点时抬高层级到 30，
+   让「批量删除」里的题型下拉浮在后续面板之上；层级导航导轨（SectionNav）高于此值。 */
+.dm-console:focus-within {
+  z-index: 30;
+}
+
+/* 装饰层统一收进一个圆角裁剪容器：网格、扫描光、跟随光斑
+   都被限制在面板圆角之内，面板本体仍可向外投影。 */
+.dm-console-fx {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.dm-console::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  /* 光斑铺满面板，所以自己跟随圆角，四角才不会露出方形边缘。 */
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 0%), var(--dm-accent-soft), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.dm-console.is-lit::after {
+  opacity: 1;
+}
+
+.dm-console.is-located {
+  animation: dmLocate 1s ease-out;
+}
+
+@keyframes dmLocate {
+  0% {
+    border-color: color-mix(in srgb, var(--theme-accent) 60%, transparent);
+    box-shadow: 0 0 0 3px var(--dm-accent-10);
+  }
+  100% {
+    border-color: var(--dm-line);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.dm-hero-grid {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(to right, var(--dm-soft) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--dm-soft) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(120% 90% at 16% 0%, #000 10%, transparent 76%);
+  mask-image: radial-gradient(120% 90% at 16% 0%, #000 10%, transparent 76%);
+}
+
+.dm-hero-scan {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 45%;
+  background: linear-gradient(180deg, transparent, var(--dm-accent-10), transparent);
+  animation: dmScan 9s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes dmScan {
+  0% {
+    transform: translateY(-130%);
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(190%);
+    opacity: 0;
+  }
+}
+
+.dm-hero-lamp {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--dm-accent-soft), transparent 68%);
+  filter: blur(14px);
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  will-change: transform;
+}
+
+.dm-hero.is-lit .dm-hero-lamp {
+  opacity: 1;
+}
+
+/* ---------- Hero 身份区 ---------- */
+.dm-hero {
+  padding: 1.5rem;
+}
+
+.dm-hero-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.1rem;
+}
+
+.dm-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  font-family: var(--dm-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.18em;
+  color: var(--theme-muted);
+}
+
+.dm-kicker i {
+  font-style: normal;
+  color: var(--theme-accent);
+}
+
+.dm-hero-name {
+  margin: 0.5rem 0 0;
+  font-size: clamp(1.35rem, 3.2vw, 1.85rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.dm-hero-path {
+  margin: 0.4rem 0 0;
+  max-width: 46rem;
+  overflow-wrap: anywhere;
+  font-family: var(--dm-mono);
+  font-size: 0.7rem;
+  color: var(--theme-muted);
+}
+
+.dm-hero-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.75rem;
+  margin: 1rem 0 0;
+}
+
+.dm-fact dt {
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--theme-muted);
+}
+
+.dm-fact dd {
+  margin: 0.18rem 0 0;
+  font-family: var(--dm-mono);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dm-gauge {
+  position: relative;
+  justify-self: start;
+  width: 132px;
+  height: 132px;
+}
+
+.dm-ring {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.dm-ring-bg {
+  fill: none;
+  stroke: var(--dm-soft-2);
+  stroke-width: 7;
+}
+
+.dm-ring-val {
+  fill: none;
+  stroke: var(--theme-accent);
+  stroke-width: 7;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.95s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dm-gauge-read {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+  margin: 0;
+}
+
+.dm-gauge-read b {
+  font-size: 1.4rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.dm-gauge-read b i {
+  margin-left: 0.08rem;
+  font-style: normal;
+  font-size: 0.68rem;
+  color: var(--theme-muted);
+}
+
+.dm-gauge-read span {
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  color: var(--theme-muted);
+}
+
+/* ---------- 指标条 ---------- */
+.dm-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 0.9rem;
+  margin: 1.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dm-hero .dm-stats {
+  margin-top: 1.4rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--dm-line);
+}
+
+.dm-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.dm-num {
+  font-size: 1.5rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.dm-num-sm {
+  font-variant-numeric: tabular-nums;
+  color: var(--danger);
+}
+
+.dm-stat-k {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--theme-muted);
+}
+
+/* ---------- 章节骨架 ---------- */
+.dm-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  scroll-margin-top: 4.5rem;
+}
+
+.dm-subset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.dm-console-plain {
+  padding: 1.1rem;
+}
+
+.dm-grid-a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.9rem;
+}
+
+.dm-card {
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--theme-text) 2%, var(--theme-surface));
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* 悬停只改变描边与投影：transform 整条留给 GSAP 入场动画，
+   一个元素上的位移由单一书写者负责，落位后才稳定。 */
+.dm-card:hover {
+  border-color: color-mix(in srgb, var(--theme-accent) 32%, var(--theme-border));
+  box-shadow: 0 6px 18px -14px color-mix(in srgb, var(--theme-text) 40%, transparent);
+}
+
+.dm-card-head,
+.dm-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.dm-h {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.dm-sub {
+  margin: 0;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--theme-muted);
+}
+
+.dm-count,
+.dm-group-count {
+  flex: 0 0 auto;
+  font-family: var(--dm-mono);
+  font-size: 0.66rem;
+  color: var(--theme-muted);
+}
+
+.dm-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.4rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 6px;
+  font-family: var(--dm-mono);
+  font-size: 0.62rem;
+  font-style: normal;
+  color: var(--theme-muted);
+}
+
+.dm-tag.is-live {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 38%, transparent);
+  background: var(--ok-soft);
+}
+
+.dm-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 999px;
+  background: var(--dm-soft);
+  color: var(--theme-muted);
+  font-family: var(--dm-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+}
+
+.dm-badge.is-live {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  background: var(--ok-soft);
+}
+
+.dm-badge.is-busy,
+.dm-badge.is-caution {
+  color: color-mix(in srgb, var(--theme-accent) 80%, var(--theme-text));
+  border-color: color-mix(in srgb, var(--theme-accent) 42%, transparent);
+  background: var(--dm-accent-10);
+}
+
+.dm-badge.is-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 36%, transparent);
+  background: var(--danger-soft);
+}
+
+.dm-file-name {
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--dm-mono);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-file-path {
+  margin: 0.2rem 0 0;
+  overflow: hidden;
+  font-family: var(--dm-mono);
+  font-size: 0.68rem;
+  color: var(--theme-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-facts-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 0.9rem;
+  margin: 0.85rem 0 0;
+  padding: 0.75rem 0 0;
+  border-top: 1px dashed var(--dm-line);
+  list-style: none;
+}
+
+.dm-facts-row li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  color: var(--theme-muted);
+}
+
+.dm-facts-row b {
+  font-family: var(--dm-mono);
+  font-weight: 500;
+  color: var(--theme-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 近期数据库 ---------- */
+.dm-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dm-recent-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.5rem 0.5rem 0.5rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
+}
+
+.dm-recent-item:hover,
+.dm-recent-item:focus-visible {
+  border-color: var(--dm-line);
+  background: var(--dm-soft);
+  transform: translateX(2px);
+}
+
+.dm-recent-item.is-current {
+  border-color: color-mix(in srgb, var(--ok) 28%, transparent);
+  background: color-mix(in srgb, var(--ok) 6%, transparent);
+}
+
+.dm-recent-ico {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--theme-muted);
+}
+
+.dm-recent-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.dm-recent-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  overflow: hidden;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-recent-path {
+  overflow: hidden;
+  font-family: var(--dm-mono);
+  font-size: 0.64rem;
+  color: var(--theme-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-recent-del {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--theme-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.25s ease, color 0.25s ease, border-color 0.25s ease;
+}
+
+.dm-recent-item:hover .dm-recent-del,
+.dm-recent-del:focus-visible {
+  opacity: 1;
+}
+
+.dm-recent-del:hover {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+.dm-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  align-self: flex-start;
+  margin-top: 0.5rem;
+  padding: 0.1rem 0;
+  border: 0;
+  background: none;
+  color: var(--theme-muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+
+.dm-more:hover {
+  color: var(--theme-accent);
+}
+
+/* ---------- 条形统计 ---------- */
+.dm-grid2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.1rem;
+  margin-top: 1.1rem;
+}
+
+.dm-block {
+  min-width: 0;
+}
+
+.dm-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.dm-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.dm-row-type {
+  flex: 0 0 auto;
+  width: 5.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-row-idx {
+  flex: 0 0 1.5rem;
+  font-family: var(--dm-mono);
+  font-size: 0.66rem;
+  color: var(--theme-muted);
+}
+
+.dm-row-name {
+  flex: 0 0 6rem;
+  overflow: hidden;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 1.5rem;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--dm-soft);
+}
+
+.dm-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--theme-accent), color-mix(in srgb, var(--theme-accent) 45%, var(--theme-text)));
+}
+
+.dm-fill.is-alt {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--theme-accent) 55%, var(--theme-muted)), color-mix(in srgb, var(--theme-muted) 80%, var(--theme-text)));
+}
+
+.dm-row-v {
+  flex: 0 0 2.5rem;
+  font-family: var(--dm-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---------- 表单与胶囊 ---------- */
+.dm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.dm-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--theme-muted);
+}
+
+/* 题型下拉：浏览器原生箭头在不同系统下宽度与配色都不受控，
+   关掉 appearance 并预留出右侧 2rem，箭头由 ::after 用描边画。 */
+.dm-select {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.dm-select select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  width: 100%;
+  padding-right: 2rem;
+}
+
+.dm-select::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 0.85rem;
+  width: 6px;
+  height: 6px;
+  margin-top: -4px;
+  border-right: 1.5px solid var(--theme-muted);
+  border-bottom: 1.5px solid var(--theme-muted);
+  transform: rotate(45deg);
+  transform-origin: 50% 50%;
+  pointer-events: none;
+  transition: border-color 0.2s ease;
+}
+
+.dm-select:focus-within::after {
+  border-color: var(--theme-accent);
+}
+
+.dm-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.dm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.dm-chip {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--theme-muted);
+  font-size: 0.74rem;
+  cursor: pointer;
+  transition: color 0.25s ease, border-color 0.25s ease, background-color 0.25s ease, transform 0.25s ease;
+}
+
+.dm-chip:hover {
+  color: var(--theme-text);
+  border-color: color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border));
+  transform: translateY(-1px);
+}
+
+.dm-chip.is-on {
+  color: var(--theme-text);
+  border-color: color-mix(in srgb, var(--theme-accent) 60%, transparent);
+  background: var(--dm-accent-10);
+}
+
+.dm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.dm-file-label {
+  cursor: pointer;
+}
+
+.dm-endrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+}
+
+/* ---------- 导入 ---------- */
+.dm-import {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.dm-drop {
+  position: relative;
+  padding: 0.35rem;
+  border: 1px dashed var(--dm-line);
+  border-radius: 10px;
+  /* 投递井有自己比面板更暗一档的底色，因此粘贴区读起来是嵌进面板的凹槽，
+     边界与内容区之间始终有可见的层级差。 */
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--theme-text) 5%, transparent),
+      color-mix(in srgb, var(--theme-text) 2.5%, transparent)),
+    color-mix(in srgb, var(--theme-bg) 82%, var(--theme-surface));
+  transition: border-color 0.25s ease, background-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* 焦点提示由整口井统一画（见下方 :focus-within），
+   键盘操作时焦点落点只有一圈描边，位置清晰。 */
+.dm-drop:focus-within {
+  border-color: color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border));
+  box-shadow: 0 0 0 2px var(--dm-accent-10);
+}
+
+.dm-drop.is-dragging {
+  border-color: color-mix(in srgb, var(--theme-accent) 65%, transparent);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--theme-accent) 14%, transparent),
+      color-mix(in srgb, var(--theme-accent) 8%, transparent)),
+    color-mix(in srgb, var(--theme-bg) 82%, var(--theme-surface));
+  box-shadow: 0 0 0 3px var(--dm-accent-10);
+}
+
+/* 拖拽态点亮四个角的 L 形短标：四角各自展开一下，
+   读起来是「对准了投放框」，落点信息集中在角上。 */
+.dm-drop-corner {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.dm-drop-tick {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  background-image: linear-gradient(to right,
+      color-mix(in srgb, var(--theme-accent) 70%, transparent) 100%, transparent 100%),
+    linear-gradient(to bottom,
+      color-mix(in srgb, var(--theme-accent) 70%, transparent) 100%, transparent 100%);
+  background-size: 11px 1px, 1px 11px;
+  background-repeat: no-repeat;
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.dm-drop-tick-tl {
+  top: 4px;
+  left: 4px;
+  background-position: left top, left top;
+}
+
+.dm-drop-tick-tr {
+  top: 4px;
+  right: 4px;
+  background-position: right top, right top;
+}
+
+.dm-drop-tick-bl {
+  bottom: 4px;
+  left: 4px;
+  background-position: left bottom, left top;
+}
+
+.dm-drop-tick-br {
+  bottom: 4px;
+  right: 4px;
+  background-position: right bottom, right top;
+}
+
+.dm-drop.is-dragging .dm-drop-corner {
+  opacity: 1;
+}
+
+.dm-drop.is-dragging .dm-drop-tick {
+  opacity: 1;
+  transform: none;
+}
+
+.dm-drop.is-dragging .dm-drop-tick-tr,
+.dm-drop.is-dragging .dm-drop-tick-bl {
+  transition-delay: 0.04s;
+}
+
+.dm-drop.is-dragging .dm-drop-tick-br {
+  transition-delay: 0.09s;
+}
+
+.dm-textarea.input-field {
+  min-height: 9rem;
+  padding: 0.65rem;
+  border: 0;
+  background: transparent;
+  color: var(--theme-text);
+  font-family: var(--dm-mono);
+  font-size: 0.72rem;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+/* 焦点由 .dm-drop:focus-within 统一表达：整口井是唯一的焦点载体 */
+.dm-textarea.input-field:focus {
+  box-shadow: none;
+}
+
+.dm-drop-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.15rem 0.5rem 0.35rem;
+  font-size: 0.68rem;
+  color: var(--theme-muted);
+}
+
+/* ---------- 去重 ---------- */
+.dm-dedup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.dm-dedup-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--dm-line);
+}
+
+.dm-dedup-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dm-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--theme-muted);
+  font-size: 0.72rem;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--theme-muted) 45%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  transition: color 0.25s ease;
+}
+
+.dm-link:hover {
+  color: var(--theme-accent);
+}
+
+.dm-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.dm-group {
+  padding: 0.75rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--theme-text) 2%, var(--theme-surface));
+}
+
+.dm-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.dm-group-content {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  color: var(--theme-text);
+}
+
+.dm-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dm-item {
+  border: 1px solid var(--dm-line);
+  border-radius: 9px;
+  background: var(--theme-surface);
+  transition: border-color 0.25s ease, background-color 0.25s ease;
+}
+
+.dm-item.is-keep {
+  border-color: color-mix(in srgb, var(--ok) 42%, var(--theme-border));
+  background: var(--ok-soft);
+}
+
+.dm-item-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.5rem 0.65rem;
+  cursor: pointer;
+}
+
+.dm-radio {
+  flex: 0 0 auto;
+  margin-top: 0.22rem;
+  accent-color: var(--theme-accent);
+}
+
+.dm-item-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.18rem;
+}
+
+.dm-item-text {
+  font-size: 0.76rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.dm-item-meta {
+  font-family: var(--dm-mono);
+  font-size: 0.62rem;
+  color: var(--theme-muted);
+}
+
+.dm-item-answers {
+  font-size: 0.66rem;
+  color: var(--theme-muted);
+}
+
+.dm-item-flag {
+  flex: 0 0 auto;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 999px;
+  font-size: 0.62rem;
+}
+
+.dm-item-flag.is-ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  background: var(--ok-soft);
+}
+
+.dm-item-flag.is-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 32%, transparent);
+  background: var(--danger-soft);
+}
+
+/* ---------- 空状态 ---------- */
+.dm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 1.4rem 0.2rem;
+}
+
+.dm-empty-t {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 500;
+}
+
+/* ---------- 上传命名对话框 ---------- */
+.dm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 0.5);
+  backdrop-filter: blur(4px);
+}
+
+.dm-modal-panel {
+  width: 100%;
+  max-width: 26rem;
+  padding: 1.25rem;
+  border: 1px solid var(--dm-line);
+  border-radius: 12px;
+  background: var(--theme-surface);
+  box-shadow: 0 24px 60px -30px rgb(0 0 0 / 0.6);
+}
+
+.dm-modal-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.dm-modal-sub {
+  margin: 0.4rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--theme-muted);
+}
+
+.dm-modal-sub b {
+  font-family: var(--dm-mono);
+  font-weight: 500;
+}
+
+.dm-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 1rem;
+}
+
+.dm-modal-hint {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--dm-mono);
+  font-size: 0.66rem;
+  color: var(--theme-muted);
+}
+
+.dm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.1rem;
+}
+
+/* ---------- 断点 ---------- */
+@media (min-width: 640px) {
+  .dm-console {
+    padding: 1.5rem;
+  }
+
+  .dm-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dm-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dm-facts-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .dm-recent-item {
+    padding-right: 0.4rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .dm-page {
+    gap: 2rem;
+  }
+
+  .dm-hero-top {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 1.5rem;
+  }
+
+  .dm-gauge {
+    justify-self: end;
+  }
+
+  .dm-stats {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .dm-stats-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .dm-grid-a {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  }
+
+  .dm-grid2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dm-form {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* ---------- 减弱动效：只保留静态可见态 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .dm-page *,
+  .dm-page *::before,
+  .dm-page *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    transition-delay: 0s !important;
+  }
+
+  .dm-hero-scan,
+  .dm-hero-lamp {
+    display: none;
+  }
+
+  .dm-chip:hover,
+  .dm-recent-item:hover {
+    transform: none;
+  }
+}
+</style>

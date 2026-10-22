@@ -5,6 +5,7 @@ import { useToastStore } from '@/stores/toast'
 import { useConfirmStore } from '@/stores/confirm'
 import PageHeader from '@/components/PageHeader.vue'
 import SectionHeader from '@/components/SectionHeader.vue'
+import SectionNav from '@/components/SectionNav.vue'
 import gsap from 'gsap'
 import { gsapEasing, prefersReducedMotion } from '@/utils/motionTokens'
 
@@ -518,42 +519,10 @@ const SECTIONS = [
   { nav: 4, index: '04', label: 'AI 兜底参数' },
   { nav: 5, index: '05', label: '查询日志' },
 ]
-const activeNav = ref(0)
-let secRaf = 0
-let secLast = 0
-
-function measureNav() {
-  const page = pageRef.value
-  if (!page) return
-  const band = window.innerHeight * 0.36
-  let idx = 0
-  page.querySelectorAll('[data-nav]').forEach(el => {
-    if (el.getBoundingClientRect().top <= band) idx = Number(el.dataset.nav)
-  })
-  activeNav.value = idx
-}
-
-function trackSections() {
-  const now = performance.now()
-  if (now - secLast > 90) { secLast = now; measureNav(); return }
-  if (secRaf) return
-  secRaf = requestAnimationFrame(() => { secRaf = 0; secLast = performance.now(); measureNav() })
-}
-
-function jumpTo(idx) {
-  const page = pageRef.value
-  if (!page) return
-  const el = page.querySelector(`[data-nav="${idx}"]`)
-  if (!el) return
-  activeNav.value = idx
-  el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' })
-  if (reduceMotion) return
-  const ring = el.querySelector('.panel') || el
-  ring.classList.remove('is-located')
-  void ring.offsetWidth
-  ring.classList.add('is-located')
-  setTimeout(() => ring.classList.remove('is-located'), 1000)
-}
+// 导轨、测量与跳转已抽离到 SectionNav；正文里两处「01 接口安全」的
+// note-link 按钮通过页内薄包装 jumpTo 调用组件 expose 的同名方法。
+const navRef = ref(null)
+const jumpTo = (idx) => navRef.value?.jumpTo(idx)
 
 // ========== Lifecycle ==========
 
@@ -564,9 +533,7 @@ onMounted(async () => {
   applyStats()
   applyFlow()
   initReveal()
-  window.addEventListener('scroll', trackSections, { passive: true, capture: true })
   window.addEventListener('resize', onFlowResize, { passive: true })
-  trackSections()
   // Auto-refresh stats every 30s
   statsTimer = setInterval(loadStats, 30000)
 })
@@ -575,9 +542,7 @@ onBeforeUnmount(() => {
   if (statsTimer) clearInterval(statsTimer)
   if (revealObserver) { revealObserver.disconnect(); revealObserver = null }
   if (spotRaf) cancelAnimationFrame(spotRaf)
-  if (secRaf) cancelAnimationFrame(secRaf)
   clearTimeout(flowResize)
-  window.removeEventListener('scroll', trackSections, { capture: true })
   window.removeEventListener('resize', onFlowResize)
   Object.values(copiedTimers).forEach(t => clearTimeout(t))
   flowTweens.forEach(t => t.kill())
@@ -617,21 +582,11 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <!-- ============ 章节导航指示器 ============ -->
-      <nav class="ex-nav" aria-label="章节导航">
-        <button
-          v-for="s in SECTIONS"
-          :key="s.nav"
-          type="button"
-          class="ex-nav-item"
-          :class="{ 'is-active': activeNav === s.nav }"
-          :aria-current="activeNav === s.nav ? 'true' : undefined"
-          :style="{ '--i': s.nav }"
-          @click="jumpTo(s.nav)"
-        >
-          <span class="ex-nav-tip"><i>{{ s.index }}</i>{{ s.label }}</span>
-          <span class="ex-nav-bar" aria-hidden="true"></span>
-        </button>
-      </nav>
+      <SectionNav
+        ref="navRef"
+        :sections="SECTIONS"
+        :container="pageRef"
+      />
 
       <!-- ============ 链路 Console：动效即状态 ============ -->
       <section class="console" ref="heroRef" data-nav="0" @mousemove="moveSpotlight" aria-label="接口调用链路">
@@ -1637,56 +1592,10 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 @keyframes ex-slot-wait { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
 .ai-load-hint { margin: 0; font-size: 10.5px; line-height: 1.55; color: var(--ex-muted); }
 
-/* ---------- 章节导航指示器 ---------- */
+/* ---------- 章节锚点偏移（导轨样式已抽离到 SectionNav） ---------- */
 .console { scroll-margin-top: 20px; }
 .section { scroll-margin-top: 76px; }
-.ex-nav {
-  position: fixed; right: 6px; top: 50%; transform: translateY(-50%);
-  z-index: 30; display: none; flex-direction: column; align-items: flex-end; gap: 14px;
-}
-.ex-nav-item {
-  position: relative; display: flex; align-items: center; justify-content: flex-end;
-  width: 24px; height: 16px; padding: 0; border: 0; background: none; cursor: pointer;
-  animation: ex-nav-in .5s cubic-bezier(.22, 1, .36, 1) backwards;
-  animation-delay: calc(160ms + var(--i, 0) * 45ms);
-}
-@keyframes ex-nav-in { from { opacity: 0; transform: translateX(9px); } }
-.ex-nav-bar {
-  display: block; width: 9px; height: 2px; border-radius: 2px;
-  background: color-mix(in srgb, var(--ex-text) 15%, transparent);
-  transition: width .42s cubic-bezier(.22, 1, .36, 1), background .3s, box-shadow .3s;
-}
-.ex-nav-item:hover .ex-nav-bar { width: 16px; background: color-mix(in srgb, var(--ex-text) 34%, transparent); }
-.ex-nav-item.is-active .ex-nav-bar {
-  width: 24px; background: var(--ex-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ex-accent) 11%, transparent);
-}
-.ex-nav-tip {
-  position: absolute; right: calc(100% + 4px); top: 50%;
-  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
-  padding: 4px 9px; border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--ex-border) 88%, transparent);
-  background: color-mix(in srgb, var(--ex-surface) 94%, transparent);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 10px 24px -18px rgba(0, 0, 0, .5);
-  font-size: 10.5px; font-weight: 600; color: var(--ex-muted-strong);
-  opacity: 0; pointer-events: none; transform: translate(7px, -50%);
-  transition: opacity .3s ease, transform .3s cubic-bezier(.22, 1, .36, 1);
-  transition-delay: calc(var(--i, 0) * 28ms);
-}
-.ex-nav-tip i {
-  font-family: var(--ex-mono); font-style: normal; font-size: 8.5px;
-  letter-spacing: .1em; color: var(--ex-muted);
-}
-.ex-nav:hover .ex-nav-tip, .ex-nav:focus-within .ex-nav-tip { opacity: 1; transform: translate(0, -50%); }
-.ex-nav-item.is-active .ex-nav-tip {
-  color: var(--ex-accent-text);
-  border-color: color-mix(in srgb, var(--ex-accent) 26%, var(--ex-border));
-}
-.ex-nav-item.is-active .ex-nav-tip i { color: var(--ex-accent-text); }
-.ex-nav-item:focus-visible { outline: 2px solid var(--ex-accent); outline-offset: 3px; border-radius: 6px; }
 @media (min-width: 1024px) {
-  .ex-nav { display: flex; }
   .section { scroll-margin-top: 22px; }
 }
 
@@ -1714,8 +1623,6 @@ input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
   .flow::before { animation: none; }
   .ai-slots.is-waiting .ai-slot:not(.is-busy) { animation: none; }
   .flow-carrier { transition: none; }
-  .ex-nav-bar, .ex-nav-tip { transition: none; }
-  .ex-nav-item { animation: none; }
   .is-located { animation: none; }
 }
 </style>
