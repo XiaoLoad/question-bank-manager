@@ -139,11 +139,16 @@ Tailwind 侧（`frontend/tailwind.config.js`）：`darkMode: 'class'`（`:7`）�
 - 根节点 `display: contents`：固定导轨与文档流内的胶囊各自保持原有的流身份，宿主页面可用 `margin-top` 等继续控制胶囊位置。
 - 用法：`ExternalBanks.vue:585`（`locate-selector=".panel"`）、`DataManagement.vue:829`（`locate-selector=".dm-console"` + `chips`）。两页锚点为 `data-nav="0..n"`；页面各自持有 `scroll-margin-top`。
 
-### 3.2 `components/SearchableSelect.vue`（可搜索下拉，269 行）
+### 3.2 `components/SearchableSelect.vue`（可搜索下拉，447 行）
 
-- props / emits 契约保持稳定：`modelValue`、`options`、`placeholder`（默认 `请选择`）、`allLabel`、`labelField`（默认 `label`）、`valueField`（默认 `value`）、`disabled`（`:4-12`）；仅 `emit('update:modelValue')`（`:14`）。当前 8 个调用点：`ImportCategoryDialog.vue:99`、`Categories.vue:411`、`DataManagement.vue`（条件导出、批量删除）、`Questions.vue` ×2、`Quiz.vue:658`、`Trash.vue:284`。
-- 祖先滚动保护：`clippedAncestors()`（`:85`）+ `withoutAncestorScroll()`（`:95`）在展开、`focus()` 与面板卸载前后记录并复位被裁剪祖先的 `scrollTop/scrollLeft`，搜索框用 `focus({ preventScroll: true })`（`:111`），避免被裁剪祖先跟着滚动导致卡片位移。
-- 面板几何：`flipUp`（`:21` / `:72` / `:80`）依据视口上下可用高度决定向上或向下展开，缩放动画的 `transform-origin` 随之切换（`.bottom-full.ss-pop`）；弹层局部 token `--ss-pop-*` 同样只从 `--theme-*` 派生，暗色只调混合强度。
+- props / emits 契约保持稳定：`modelValue`、`options`、`placeholder`（默认 `请选择`）、`allLabel`、`labelField`（默认 `label`）、`valueField`（默认 `value`）、`disabled`（`:4-12`）；仅 `emit('update:modelValue')`（`:14`）。当前 8 个调用点：`ImportCategoryDialog.vue:99`、`Categories.vue:411`、`DataManagement.vue:1083`（条件导出）与 `:1190`（批量删除）、`Questions.vue` ×2、`Quiz.vue:658`、`Trash.vue:284`。改动该组件时以这些点为回归范围，几何逻辑不依赖任何调用点参数。
+- 浮层宿主：面板用 `<Teleport to="body" :disabled="!canTeleport">`（`:322`）挂到 `document.body`，`position: fixed` 由 `place()`（`:117`）按触发器 `getBoundingClientRect()` 内联写入（`:148`），因此脱离祖先的 `overflow` 裁剪与 stacking context。`canTeleport`（`:68`）在 `onMounted` 取 `!!document.body`，body 不可用时降级为原地渲染，fixed 坐标仍以视口为参照。
+- 祖先滚动保护是抖动修复的核心：聚焦一律走 `withoutAncestorScroll(() => el.focus({ preventScroll: true }))`（`:232` / `:200` / `:246`），组件内不使用 `scrollIntoView`；被裁剪祖先的枚举仍保留在 `clippedAncestors()`（`:222`）供复位使用。
+- 面板几何：`flipUp`（`:21` 判定常量、`:139` 赋值）按视口上下剩余高度决定展开方向，阈值 `MIN_DROPDOWN_SPACE_REM = 20`；高度取 `NATURAL_CAP_REM`（20rem，`:37`）与所选方向可用空间减 `SAFETY`（`:28`）的较小值，并用 `MIN_PANEL_H`（160，`:30`）/ `MIN_FIT_H`（96，`:32`）兜住下限；宽度以 `MIN_PANEL_W_REM`（10rem，`:35`）随根字号缩放（`rootFontSizePx()` `:96`）。位置随 `scroll` / `resize` 经 `schedulePlace()`（`:167`）合到 rAF 重算，`startTracking()` / `stopTracking()`（`:182` / `:188`）成对注册与清理。
+- 外部点击判定必须同时放行触发器与面板：`onClickOutside()`（`:272`）里 `inTrigger`（`:274`）之外还要 `inPanel = panelRef.value.contains(e.target)`（`:276`），因为 Teleport 后面板不在 `containerRef` 子树内。收起走 `closeDropdown(withFocus)`（`:204`），`withFocus` 为真时把焦点交回触发器（Esc 路径）。
+- 可访问性：触发器 `aria-haspopup="listbox"` + `:aria-expanded`（`:311` / `:312`），列表容器 `role="listbox"`（`:350`），选项行 `role="option"` + `aria-selected`（`:360`）；`role` 不放面板根节点，因为面板内含搜索输入。
+- 弹层局部 token `--ss-pop-*` 只从 `--theme-*` 经 `color-mix` 派生，暗色只调混合强度：声明处成对出现于 `.ss-select, .ss-pop`（`:382`）与 `.dark .ss-select, .dark .ss-pop`（`:397`）。**新增 token 必须同时改这两处**——面板被传送到 body 后已不在 `.ss-select` 子树内，漏掉第一处会拿到 `undefined`。scoped 编译只把 `data-v` 补在复合选择器末段，Teleport 保留面板自身 `data-v`，故暗色覆写仍然命中。
+- z-index 由 `resolveZIndex()`（`:102`）沿父链取最大整数档（遇 `position: fixed` 即停），无档位祖先兜底 `Z_FALLBACK = 200`（`:52`），上限 `Z_CEILING = 9998`（`:53`）——一律写死 200 会让弹窗内的下拉被自己所在的弹窗盖住，一律跟随宿主又可能越过 toast 档。
 
 ### 3.3 页内 z-index 阶梯（新增层级前先对齐）
 
@@ -152,7 +157,10 @@ Tailwind 侧（`frontend/tailwind.config.js`）：`darkMode: 'class'`（`:7`）�
 | 面板装饰层 / 光斑 | 0 | `DataManagement.vue:1448` `.dm-console-fx`、`:1458` `.dm-console::after` |
 | 面板正文 | 1 | `DataManagement.vue:1434` `.dm-console > :not(.dm-console-fx)` |
 | 投递角标 | 2 | `DataManagement.vue:2215` `.dm-drop-corner` |
-| 聚焦面板（弹出浮层） | 30 | `DataManagement.vue:1440` `.dm-console:focus-within` |
+| 聚焦面板（抬升自身以承载浮层） | 30 | `DataManagement.vue:1440` `.dm-console:focus-within` |
 | 章节导航导轨 | 40 | `SectionNav.vue:172` `.sn-nav`（高于聚焦面板，低于页面模态） |
 | 页面模态（上传命名） | 90 | `DataManagement.vue:2472` `.dm-modal` |
+| 页内浮层兜底档 | 200 | `SearchableSelect.vue:52` `Z_FALLBACK`（浮层 Teleport 到 body 后回到根层叠上下文，需高于以上各档） |
+| 宿主弹窗同档（跟随取到的最大父链 z） | ≤ 9998 | `SearchableSelect.vue:53` `Z_CEILING`，如 `ImportCategoryDialog.vue:49` 的 9997 容器内下拉 |
 | 全局对话框/Toast | 9994–9999 | `ImportResultDialog.vue:72`、`ToastContainer.vue:69` 等 |
+| 全局加载层 | 10000 | `GlobalLoader.vue:10` |
